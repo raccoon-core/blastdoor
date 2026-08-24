@@ -1,0 +1,84 @@
+# Blastdoor jobs for a GitLab repository.
+#
+# Include it from your .gitlab-ci.yml:
+#
+#   include:
+#     - remote: https://raw.githubusercontent.com/raccoon-core/blastdoor/v1/ci/gitlab/blastdoor.yml
+#
+#   stages: [lint, plan, risk, documentation]
+#
+# Set these CI/CD variables in the project:
+#
+#   BLASTDOOR_GITLAB_TOKEN     token with the api scope (masked, protected)
+#   BLASTDOOR_APPROVER_GROUP_IDS  optional: group ids allowed to approve
+#
+# The plan job needs whatever credentials your providers and state backend
+# already use; add them the way you would for any terraform job.
+
+variables:
+  BLASTDOOR_IMAGE: raccooncore/blastdoor:v1
+  # Directory the jobs pass artifacts through.
+  BLASTDOOR_DIR: .blastdoor
+  # Where your policies live, relative to the repository root.
+  BLASTDOOR_POLICY_DIR: policy
+  # Directory to scan for units.
+  BLASTDOOR_ROOT: .
+  # Score at or above which a human has to approve.
+  BLASTDOOR_THRESHOLD: "50"
+
+.blastdoor:rules:
+  merge_request:
+    - if: $CI_PIPELINE_SOURCE == "merge_request_event"
+
+# Plans every unit the merge request touches. Version selection is tenv's job:
+# it reads the .opentofu-version / .terraform-version / .terragrunt-version
+# files in each unit.
+blastdoor:plan:
+  stage: plan
+  image: $BLASTDOOR_IMAGE
+  rules:
+    - !reference [".blastdoor:rules", merge_request]
+  script:
+    - mkdir -p "$BLASTDOOR_DIR"
+    - blastdoor detect --root "$BLASTDOOR_ROOT" --base-ref "$CI_MERGE_REQUEST_DIFF_BASE_SHA" | tee "$BLASTDOOR_DIR/units.txt"
+    - blastdoor plan --units-file "$BLASTDOOR_DIR/units.txt" --out-dir "$BLASTDOOR_DIR"
+  artifacts:
+    paths:
+      - $BLASTDOOR_DIR/
+    expire_in: 1 day
+
+# Scores the plans and posts the summary on the merge request.
+blastdoor:eval:
+  stage: risk
+  image: $BLASTDOOR_IMAGE
+  needs:
+    - job: blastdoor:plan
+      artifacts: true
+  rules:
+    - !reference [".blastdoor:rules", merge_request]
+  script:
+    - blastdoor eval
+      --plan-dir "$BLASTDOOR_DIR"
+      --policy "$BLASTDOOR_POLICY_DIR"
+      --threshold "$BLASTDOOR_THRESHOLD"
+      --out-dir "$BLASTDOOR_DIR"
+  artifacts:
+    reports:
+      dotenv: $BLASTDOOR_DIR/blastdoor.env
+    paths:
+      - $BLASTDOOR_DIR/report.json
+      - $BLASTDOOR_DIR/summary.md
+    expire_in: 1 day
+
+# Requires an approval when the score is too high, approves when it is not.
+# Add --auto-merge if you want low-risk changes to merge on their own.
+blastdoor:gate:
+  stage: risk
+  image: $BLASTDOOR_IMAGE
+  needs:
+    - job: blastdoor:eval
+      artifacts: true
+  rules:
+    - !reference [".blastdoor:rules", merge_request]
+  script:
+    - blastdoor gate --report "$BLASTDOOR_DIR/report.json" --summary "$BLASTDOOR_DIR/summary.md"

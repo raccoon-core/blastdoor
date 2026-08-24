@@ -1,0 +1,16 @@
+{
+  "format_version": "1.2",
+  "resource_changes": [
+    {
+      "address": "data.vault_kv_secret_v2.user_passwords[\"svc\"]",
+      "mode": "data",
+      "type": "vault_kv_secret_v2",
+      "name": "user_passwords",
+      "change": {
+        "actions": ["read"],
+        "before": null,
+        "after": { "mount": "sre", "name": "products/scp/kafka/config" }
+      }
+    }
+  ]
+}

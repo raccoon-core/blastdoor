@@ -1,0 +1,20 @@
+{
+  "format_version": "1.2",
+  "resource_changes": [
+    {
+      "address": "kafka_topic.topics[\"orders.created.v1\"]",
+      "type": "kafka_topic",
+      "name": "topics",
+      "change": {
+        "actions": ["create"],
+        "before": null,
+        "after": {
+          "name": "orders.created.v1",
+          "partitions": 6,
+          "replication_factor": 3,
+          "config": { "cleanup.policy": "delete", "retention.ms": "604800000" }
+        }
+      }
+    }
+  ]
+}

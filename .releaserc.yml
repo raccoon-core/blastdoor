@@ -1,0 +1,29 @@
+# Releases are driven by conventional commits on main:
+#   fix:   -> patch      feat:  -> minor      feat!: / BREAKING CHANGE -> major
+# Anything else (chore, docs, refactor, test, ci) releases nothing.
+#
+# See CONTRIBUTING.md for the commit convention and the release flow.
+branches:
+  - main
+
+plugins:
+  # Work out the bump from the commits since the last tag.
+  - "@semantic-release/commit-analyzer"
+
+  # Build the release notes from those commits.
+  - "@semantic-release/release-notes-generator"
+
+  # Keep a CHANGELOG.md in the repository.
+  - - "@semantic-release/changelog"
+    - changelogFile: CHANGELOG.md
+
+  # Commit the changelog back to main and tag it. The [skip ci] keeps this
+  # commit from starting another release run.
+  - - "@semantic-release/git"
+    - assets:
+        - CHANGELOG.md
+      message: "chore(release): ${nextRelease.version} [skip ci]\n\n${nextRelease.notes}"
+
+  # Create the GitHub Release. GoReleaser appends the binaries to it, and the
+  # publish job pushes the matching image.
+  - "@semantic-release/github"

@@ -1,0 +1,44 @@
+# Binaries for the GitHub Release. semantic-release has already worked out the
+# version, tagged it, and created the release with its notes by the time this
+# runs — so GoReleaser only appends artifacts and writes no changelog of its
+# own.
+version: 2
+
+project_name: blastdoor
+
+before:
+  hooks:
+    - go mod download
+
+builds:
+  - id: blastdoor
+    main: ./cmd/blastdoor
+    binary: blastdoor
+    env:
+      - CGO_ENABLED=0
+    goos: [linux, darwin, windows]
+    goarch: [amd64, arm64]
+    ldflags:
+      - -s -w -X github.com/raccoon-core/blastdoor/internal/cli.Version={{ .Version }}
+
+archives:
+  - id: blastdoor
+    formats: [tar.gz]
+    format_overrides:
+      - goos: windows
+        formats: [zip]
+    name_template: "{{ .ProjectName }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}"
+    files:
+      - README.md
+      - LICENSE
+
+checksum:
+  name_template: checksums.txt
+
+# semantic-release owns the release notes.
+changelog:
+  disable: true
+
+release:
+  # The release already exists, so add to it rather than trying to create it.
+  mode: append

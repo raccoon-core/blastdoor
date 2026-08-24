@@ -1,0 +1,96 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.27"
+          cache: true
+
+      - name: Check formatting
+        run: |
+          unformatted=$(gofmt -l .)
+          if [ -n "$unformatted" ]; then
+            echo "These files need gofmt:"
+            echo "$unformatted"
+            exit 1
+          fi
+
+      - name: Vet
+        run: go vet ./...
+
+      - name: Test
+        run: go test -race ./...
+
+  docker:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write # push the PR preview image to ghcr.io
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Name the image
+        id: meta
+        run: |
+          # ghcr.io rejects uppercase, so lowercase the owner defensively.
+          echo "image=ghcr.io/${GITHUB_REPOSITORY,,}" >> "$GITHUB_OUTPUT"
+          echo "version=ci-${GITHUB_SHA::7}" >> "$GITHUB_OUTPUT"
+
+      # Single-arch on purpose: this is a preview to try in a pipeline, not a
+      # release. release.yml builds amd64 + arm64 for the real thing.
+      - name: Build image
+        run: docker build --build-arg VERSION=${{ steps.meta.outputs.version }} -t blastdoor:ci .
+
+      - name: Smoke test the image
+        run: |
+          docker run --rm blastdoor:ci --version
+          docker run --rm --entrypoint sh blastdoor:ci -c 'command -v tofu && command -v terragrunt'
+
+      # A pull request from a fork gets a read-only token and cannot write
+      # packages, so skip rather than fail the run on a permissions error.
+      - name: Publish the preview image
+        id: publish
+        if: github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository
+        env:
+          IMAGE: ${{ steps.meta.outputs.image }}
+          TAG: pr-${{ github.event.pull_request.number }}
+        run: |
+          echo "${{ secrets.GITHUB_TOKEN }}" | docker login ghcr.io -u "${{ github.actor }}" --password-stdin
+          docker tag blastdoor:ci "$IMAGE:$TAG"
+          docker push "$IMAGE:$TAG"
+          echo "ref=$IMAGE:$TAG" >> "$GITHUB_OUTPUT"
+
+      # Put the reference in the run summary rather than a PR comment, so
+      # iterating on a branch does not spam the conversation.
+      - name: Explain how to use it
+        if: steps.publish.outputs.ref != ''
+        run: |
+          {
+            echo "### Preview image"
+            echo
+            echo '```'
+            echo "docker pull ${{ steps.publish.outputs.ref }}"
+            echo '```'
+            echo
+            echo "In a GitLab pipeline, override the image the jobs use:"
+            echo
+            echo '```yaml'
+            echo "variables:"
+            echo "  BLASTDOOR_IMAGE: ${{ steps.publish.outputs.ref }}"
+            echo '```'
+            echo
+            echo "Deleted automatically when this pull request closes."
+          } >> "$GITHUB_STEP_SUMMARY"
