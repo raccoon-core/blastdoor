@@ -2,85 +2,106 @@
 
 Terraform/OpenTofu plan checker for self-service.
 
-Blastdoor scores a plan against [OPA](https://www.openpolicyagent.org/) policies
-you write, then decides whether a merge request can go through on its own or
-needs a human. **Every resource change starts at the maximum score of 100.**
-Policies bring it down by classifying changes they understand, so a plan that
-touches something no policy covers is never waved through.
+Blastdoor judges every change in a plan against [OPA](https://www.openpolicyagent.org/)
+policies you write. Each change comes back **pass**, **review** or **deny**, and
+the worst one decides the merge request.
+
+There is no score and no threshold. A policy author answers a question they can
+actually answer — is this fine, does a person need to look, or is this not
+allowed? — instead of inventing a number and hoping it lands the right side of
+a cutoff. **A change no policy matches is denied.**
 
 ## Quick start
 
-Score one of the bundled example plans:
+Judge one of the bundled example plans:
 
 ```console
 $ docker run --rm -v "$PWD:/work" raccooncore/blastdoor \
     eval --plan examples/plans/kafka-topic-create.json --policy examples/policies
 
-## Blastdoor risk assessment
+## Blastdoor
 
-**Pass** — total risk score **0** is below the threshold of 50.
+**Pass** — every one of the 1 change(s) is allowed by policy.
 
-| Unit | Resource | Score | Finding |
+| Verdict | Unit | Change | Why |
 |---|---|---|---|
-| … | kafka_topic.topics["orders.created.v1"] | 0 | creating topic orders.created.v1 |
+| pass | … | `kafka_topic.topics["orders.created.v1"]` (create) | creating topic orders.created.v1 |
 ```
 
-Swap the plan for `unclassified-resource.json` and the score jumps to 100: no
-policy claims an `aws_s3_bucket`, so the door stays shut.
+Swap the plan for `unclassified-resource.json` and it comes back **denied**: no
+rule matches an `aws_s3_bucket`, so the door stays shut and the summary names
+the change that needs one.
 
 ## Writing a policy
 
-A policy is Rego in `package blastdoor` that does two things — scores a change,
-and claims it:
+A policy is Rego in `package blastdoor` that puts changes into one of three
+rule sets, each with a reason:
 
 ```rego
 package blastdoor
 
-# Score it.
-deny contains {"msg": msg, "score": 0, "resource": rc.address} if {
+allow contains {"resource": rc.address, "reason": "creating a topic is additive"} if {
 	some rc in input.resource_changes
 	rc.type == "kafka_topic"
 	rc.change.actions == ["create"]
-	msg := sprintf("%s: creating a topic", [rc.address])
 }
 
-# Claim it, so the built-in backstop stops scoring it 100.
-classified contains rc.address if {
+review contains {"resource": rc.address, "reason": "deleting a topic destroys its data"} if {
 	some rc in input.resource_changes
 	rc.type == "kafka_topic"
-	rc.change.actions == ["create"]
+	rc.change.actions == ["delete"]
+}
+
+deny contains {"resource": rc.address, "reason": "wildcard grants unbounded access"} if {
+	some rc in input.resource_changes
+	rc.type == "kafka_acl"
+	contains(rc.change.after.acl_principal, "*")
 }
 ```
 
-`input` is the plan JSON from `tofu show -json`. A finding needs `msg`; `score`
-defaults to 100 when omitted, and `resource` is what shows up in the report.
+`input` is the plan JSON from `tofu show -json`. Every judgement needs a
+`resource` to attach to and a `reason` — the reason is what the reviewer reads,
+so both are required rather than optional.
 
-A score of 0 is how a policy green-flags a change. Keep the `classified` claim
-as narrow as the rule that justifies it — a claim wider than the rule is how
-changes slip through unscored.
+When several rules match one change, **the most severe wins**. Adding a rule can
+therefore only ever make a change stricter, never weaker.
 
 See [examples/](examples/) for a worked policy and a plan per scenario, and
 [examples/README.md](examples/README.md) for how to iterate on one.
 
-## What "denied by default" means
+## The three verdicts
 
-Only a policy can lower a score, and only for what it explicitly claims.
-Everything else is the maximum:
+| Verdict | Meaning | What the gate does |
+|---|---|---|
+| `pass` | A rule allows it | Approves, and with `--auto-merge` queues the merge |
+| `review` | A rule wants a person | Requires a human approval |
+| `deny` | A rule forbids it, or no rule matched it | Requires approval **and** fails the job, so the pipeline is red |
+
+The plan takes the worst verdict of any change in it. No arithmetic: ten
+changes a policy is happy with do not add up to a problem, and one it forbids
+is not offset by nine that are fine.
+
+`deny` and `review` are deliberately different. A review is a question for a
+person, and approving answers it. A denial is not — it says this should not
+happen, so clearing it means changing the plan or changing the policy.
+
+Denied by default, specifically:
 
 | | |
 |---|---|
-| A resource type no policy claims | 100 |
-| A claimed type in an unclaimed shape (a replace, say) | 100 |
-| A finding written without a `score` | 100 |
-| A negative score | rejected — it would mask risk found elsewhere |
-| A fractional score | rounded away from 0, never into "allowed" |
-| Anything that isn't plan JSON | an error, never a score of 0 |
-| A run that scored no units at all | the gate abstains — no approval, no merge |
+| A change no rule matches | `deny`, reason "no policy judges this change" |
+| A type with rules, in a shape none of them match | `deny` |
+| A judgement with no `resource` or no `reason` | an error — it cannot be attached or explained |
+| Anything that isn't plan JSON | an error, never an empty plan that passes |
+| A run with no units at all | the gate abstains — no approval, no merge |
 
-The only change the backstop passes on its own is a `no-op`. These are pinned
-by [`default_deny_test.go`](internal/policy/default_deny_test.go); `eval
---no-base-policy` turns the backstop off for debugging a policy in isolation
-and does not belong in CI.
+A `no-op` is the only change needing no rule. These are pinned by
+[`policy_test.go`](internal/policy/policy_test.go).
+
+Verdicts are not the whole story: a change that can edit the policies judging
+it, or delete the job that runs them, does not need to beat them. Pass
+`--guard-path` (the GitLab template does by default) and read
+[docs/hardening.md](docs/hardening.md) before relying on the gate.
 
 ## Commands
 
@@ -88,15 +109,16 @@ and does not belong in CI.
 |---|---|
 | `blastdoor detect` | Lists the units a change touches, from the git diff |
 | `blastdoor plan` | Runs init/plan/show for each unit, saving plan JSON |
-| `blastdoor eval` | Scores plan JSON, writing `report.json`, `summary.md`, `blastdoor.env` |
+| `blastdoor eval` | Judges plan JSON, writing `report.json`, `summary.md`, `blastdoor.env` |
 | `blastdoor gate` | Posts the summary on a GitLab merge request and gates it |
 
 `--help` on any of them has the flags.
 
 A unit is a directory with a `terragrunt.hcl` or `.tf` files. `detect` treats a
-unit as affected when a `.hcl`/`.tf` file changed in the unit *or in any parent
-directory*, matching how Terragrunt's `find_in_parent_folders()` shares config —
-so editing one `component.hcl` plans every environment under it.
+unit as affected when a `.hcl`, `.tf`, `.tfvars`, `.tf.json` or `.tfvars.json`
+file changed in the unit *or in any parent directory*, matching how Terragrunt's
+`find_in_parent_folders()` shares config — so editing one `component.hcl` plans
+every environment under it.
 
 ## Terraform, OpenTofu, Terragrunt
 
@@ -120,11 +142,10 @@ include:
 stages: [plan, risk]
 ```
 
-Set `BLASTDOOR_GITLAB_TOKEN` to a token with the `api` scope. Above the
-threshold, `gate` puts an approval rule on the merge request; below it, it
-approves, and with `--auto-merge` queues the merge for when the pipeline
-succeeds. A 401/403 fails the job rather than being mistaken for "nothing to
-gate".
+Set `BLASTDOOR_GITLAB_TOKEN` to a token with the `api` scope. `gate` approves a
+passing merge request, requires an approval on `review`, and on `deny` also
+fails the job. A 401/403 fails the job rather than being mistaken for "nothing
+to gate".
 
 See [ci/gitlab/blastdoor.yml](ci/gitlab/blastdoor.yml) for the variables.
 
@@ -145,6 +166,7 @@ The image bundles tenv, so `plan` works out of the box. A bare binary gives you
 ## Contributing
 
 [CONTRIBUTING.md](CONTRIBUTING.md). `make check` runs everything CI does.
+Agents: [AGENTS.md](AGENTS.md).
 
 Commits follow [Conventional Commits](https://www.conventionalcommits.org/) —
 `fix:` and `feat:` on `main` release themselves, versioned by semantic-release.

@@ -187,6 +187,25 @@ func (c *Client) Approve(ctx context.Context, iid int) error {
 	return err
 }
 
+// Unapprove withdraws the token user's approval.
+//
+// This matters when a merge request gets riskier: an approval blastdoor gave
+// an earlier, safe push would otherwise still satisfy the rule it raises now.
+// GitLab answers 404 when there is no approval to withdraw, which is fine.
+func (c *Client) Unapprove(ctx context.Context, iid int) error {
+	err := c.do(ctx, http.MethodPost, c.mrPath(iid, "/unapprove"), nil, nil)
+
+	var apiErr *APIError
+	if errors.As(err, &apiErr) && apiErr.Status == http.StatusNotFound {
+		return nil
+	}
+	var authErr *AuthError
+	if errors.As(err, &authErr) && authErr.Status == http.StatusUnauthorized {
+		return nil
+	}
+	return err
+}
+
 // MergeWhenPipelineSucceeds queues the merge for when the pipeline goes green.
 func (c *Client) MergeWhenPipelineSucceeds(ctx context.Context, iid int, squash bool) error {
 	body := map[string]any{

@@ -1,50 +1,110 @@
-// Package policy evaluates Terraform/OpenTofu plan JSON against Rego policies
-// and turns the resulting findings into risk scores.
+// Package policy judges Terraform/OpenTofu plan JSON against Rego policies.
+//
+// Every resource change gets one of three verdicts. There is no score and no
+// threshold: a policy author answers "is this fine, does a person need to look,
+// or is it not allowed?" — a question they can actually answer — rather than
+// inventing a number and hoping it lands the right side of a cutoff.
 package policy
 
 import (
 	"context"
-	_ "embed"
 	"encoding/json"
 	"errors"
 	"fmt"
-	"math"
 	"sort"
 
 	"github.com/open-policy-agent/opa/v1/rego"
 )
 
-//go:embed base.rego
-var basePolicy string
+// Verdict is what a policy decided about a change.
+type Verdict string
 
 const (
-	// DefaultQuery is the rule blastdoor evaluates. Policies declare
-	// `package blastdoor` and add findings to `deny`.
-	DefaultQuery = "data.blastdoor.deny"
-
-	// DefaultScore is used for a finding that carries no explicit score.
-	// It is the maximum, so an under-specified rule fails closed.
-	DefaultScore = 100
+	// Pass means a policy looked at the change and is content with it.
+	Pass Verdict = "pass"
+	// Review means a policy wants a person to approve it.
+	Review Verdict = "review"
+	// Deny means a policy forbids it, or no policy judged it at all.
+	// Approving does not clear a Deny — the plan or the policy has to change.
+	Deny Verdict = "deny"
 )
 
-// Finding is one scored observation about one resource change.
-type Finding struct {
-	Resource string `json:"resource"`
-	Score    int    `json:"score"`
-	Msg      string `json:"msg"`
+// severity orders verdicts. The worst verdict anywhere decides the plan.
+func severity(v Verdict) int {
+	switch v {
+	case Pass:
+		return 1
+	case Review:
+		return 2
+	case Deny:
+		return 3
+	}
+	return 0
 }
 
-// Allowed reports whether this finding green-flags its resource: a policy
-// looked at the change and scored it as carrying no risk.
-func (f Finding) Allowed() bool { return f.Score == 0 }
+// Worse returns the more severe of two verdicts.
+func Worse(a, b Verdict) Verdict {
+	if severity(b) > severity(a) {
+		return b
+	}
+	return a
+}
+
+// Queries are the three rule sets a policy contributes to.
+var Queries = map[Verdict]string{
+	Pass:   "data.blastdoor.allow",
+	Review: "data.blastdoor.review",
+	Deny:   "data.blastdoor.deny",
+}
+
+// ReasonUnjudged is given to a change no policy matched.
+const ReasonUnjudged = "no policy judges this change"
+
+// Change is one resource change and what the policies made of it.
+type Change struct {
+	Address string   `json:"address"`
+	Type    string   `json:"type"`
+	Actions []string `json:"actions"`
+	Verdict Verdict  `json:"verdict"`
+	// Reasons holds every matching rule's explanation, most severe first.
+	Reasons []string `json:"reasons,omitempty"`
+}
+
+// Result is the verdict for a whole plan.
+type Result struct {
+	Verdict Verdict  `json:"verdict"`
+	Changes []Change `json:"changes"`
+}
+
+// Counts tallies the changes by verdict.
+func (r Result) Counts() map[Verdict]int {
+	out := map[Verdict]int{}
+	for _, c := range r.Changes {
+		out[c.Verdict]++
+	}
+	return out
+}
+
+// Unjudged returns the changes no policy matched.
+func (r Result) Unjudged() []Change {
+	var out []Change
+	for _, c := range r.Changes {
+		for _, reason := range c.Reasons {
+			if reason == ReasonUnjudged {
+				out = append(out, c)
+				break
+			}
+		}
+	}
+	return out
+}
 
 // ValidatePlan checks that a document really is Terraform/OpenTofu plan JSON
-// before it is scored.
+// before it is judged.
 //
 // Without this, anything that fails to parse as a plan — a truncated file, an
-// error message, `{}` — evaluates to zero findings and sails through as a
-// score of 0. Scoring something blastdoor cannot read must never look like
-// scoring something safe.
+// error message, `{}` — has no changes to judge and passes. Failing to read a
+// plan must never look like reading a safe one.
 func ValidatePlan(plan any) error {
 	doc, ok := plan.(map[string]any)
 	if !ok {
@@ -67,7 +127,7 @@ func ValidatePlan(plan any) error {
 	// A plan carries planned_values even when it changes nothing, so a
 	// document with neither field is not a plan. This is what catches state
 	// output — `tofu show -json` with no plan file — which would otherwise
-	// look like a plan that changes nothing and score 0.
+	// look like a plan with nothing in it.
 	if _, hasPlanned := doc["planned_values"]; !hasChanges && !hasPlanned {
 		return errors.New(`not a plan: no "resource_changes" and no "planned_values". This looks like state output — pass a plan file: 'tofu show -json <planfile>'`)
 	}
@@ -78,112 +138,205 @@ func ValidatePlan(plan any) error {
 type Options struct {
 	// PolicyPaths are directories or .rego files to load.
 	PolicyPaths []string
-	// Query overrides DefaultQuery.
-	Query string
-	// NoBasePolicy disables the embedded default-deny backstop.
-	NoBasePolicy bool
 }
 
-// Evaluator holds a compiled set of policies, ready to evaluate many plans.
+// Evaluator holds a compiled set of policies, ready to judge many plans.
 type Evaluator struct {
-	prepared rego.PreparedEvalQuery
-	query    string
+	queries map[Verdict]rego.PreparedEvalQuery
 }
 
 // New compiles the policies described by opts.
 func New(ctx context.Context, opts Options) (*Evaluator, error) {
-	query := opts.Query
-	if query == "" {
-		query = DefaultQuery
-	}
+	e := &Evaluator{queries: map[Verdict]rego.PreparedEvalQuery{}}
 
-	args := []func(*rego.Rego){rego.Query(query)}
-	if !opts.NoBasePolicy {
-		args = append(args, rego.Module("blastdoor/base.rego", basePolicy))
-	}
-	if len(opts.PolicyPaths) > 0 {
-		args = append(args, rego.Load(opts.PolicyPaths, nil))
-	}
+	for verdict, query := range Queries {
+		args := []func(*rego.Rego){rego.Query(query)}
+		if len(opts.PolicyPaths) > 0 {
+			args = append(args, rego.Load(opts.PolicyPaths, nil))
+		}
 
-	prepared, err := rego.New(args...).PrepareForEval(ctx)
-	if err != nil {
-		return nil, fmt.Errorf("compiling policies: %w", err)
+		prepared, err := rego.New(args...).PrepareForEval(ctx)
+		if err != nil {
+			return nil, fmt.Errorf("compiling policies for %s: %w", query, err)
+		}
+		e.queries[verdict] = prepared
 	}
-	return &Evaluator{prepared: prepared, query: query}, nil
+	return e, nil
 }
 
-// Evaluate scores a single plan. The plan is the decoded JSON produced by
-// `tofu show -json` (or the terraform/terragrunt equivalent).
-func (e *Evaluator) Evaluate(ctx context.Context, plan any) ([]Finding, error) {
-	rs, err := e.prepared.Eval(ctx, rego.EvalInput(plan))
-	if err != nil {
-		return nil, fmt.Errorf("evaluating policies: %w", err)
-	}
-	if len(rs) == 0 {
-		// The query was undefined for this input: no rule matched, so
-		// there is nothing to report.
-		return nil, nil
+// Evaluate judges every real change in a plan.
+//
+// A change matched by no rule is denied. That is decided here, from the plan
+// itself, rather than by a policy rule that has to fire — a rule that does not
+// run must not be the difference between a change being judged and being waved
+// through.
+func (e *Evaluator) Evaluate(ctx context.Context, plan any) (Result, error) {
+	// Gather each rule set's judgements, keyed by resource address.
+	matched := map[string]map[Verdict][]string{}
+	for verdict := range Queries {
+		judgements, err := e.judgements(ctx, verdict, plan)
+		if err != nil {
+			return Result{}, err
+		}
+		for address, reasons := range judgements {
+			if matched[address] == nil {
+				matched[address] = map[Verdict][]string{}
+			}
+			matched[address][verdict] = append(matched[address][verdict], reasons...)
+		}
 	}
 
-	var findings []Finding
+	var changes []Change
+	overall := Pass
+
+	for _, rc := range resourceChanges(plan) {
+		address, _ := rc["address"].(string)
+		if address == "" || isNoOp(rc) {
+			continue
+		}
+
+		change := Change{
+			Address: address,
+			Type:    stringField(rc, "type"),
+			Actions: actions(rc),
+			Verdict: Deny,
+		}
+
+		byVerdict, judged := matched[address]
+		if !judged || len(byVerdict) == 0 {
+			// Nothing matched it, so nobody has decided what it is.
+			change.Reasons = []string{ReasonUnjudged}
+		} else {
+			// The most severe matching rule wins, so adding a rule can only
+			// ever make a change stricter, never weaker.
+			change.Verdict = Pass
+			for verdict := range byVerdict {
+				change.Verdict = Worse(change.Verdict, verdict)
+			}
+			change.Reasons = orderedReasons(byVerdict)
+		}
+
+		overall = Worse(overall, change.Verdict)
+		changes = append(changes, change)
+	}
+
+	sort.Slice(changes, func(i, j int) bool {
+		if severity(changes[i].Verdict) != severity(changes[j].Verdict) {
+			return severity(changes[i].Verdict) > severity(changes[j].Verdict)
+		}
+		return changes[i].Address < changes[j].Address
+	})
+
+	return Result{Verdict: overall, Changes: changes}, nil
+}
+
+// judgements evaluates one rule set, returning reasons by resource address.
+func (e *Evaluator) judgements(ctx context.Context, verdict Verdict, plan any) (map[string][]string, error) {
+	rs, err := e.queries[verdict].Eval(ctx, rego.EvalInput(plan))
+	if err != nil {
+		return nil, fmt.Errorf("evaluating %s: %w", Queries[verdict], err)
+	}
+
+	out := map[string][]string{}
 	for _, result := range rs {
 		for _, expr := range result.Expressions {
 			values, ok := expr.Value.([]any)
 			if !ok {
-				return nil, fmt.Errorf("policy query %q returned %T, want a set of findings", e.query, expr.Value)
+				return nil, fmt.Errorf("%s returned %T, want a set of judgements", Queries[verdict], expr.Value)
 			}
 			for _, v := range values {
-				f, err := decodeFinding(v)
+				address, reason, err := decodeJudgement(v, Queries[verdict])
 				if err != nil {
 					return nil, err
 				}
-				findings = append(findings, f)
+				out[address] = append(out[address], reason)
 			}
 		}
 	}
-
-	sort.Slice(findings, func(i, j int) bool {
-		if findings[i].Resource != findings[j].Resource {
-			return findings[i].Resource < findings[j].Resource
-		}
-		return findings[i].Msg < findings[j].Msg
-	})
-	return findings, nil
+	return out, nil
 }
 
-// decodeFinding accepts either a bare string (the conftest idiom, scored at
-// DefaultScore) or an object with msg/score/resource fields.
-func decodeFinding(v any) (Finding, error) {
-	if msg, ok := v.(string); ok {
-		return Finding{Msg: msg, Score: DefaultScore}, nil
+// decodeJudgement reads one entry from a rule set.
+func decodeJudgement(v any, query string) (address, reason string, err error) {
+	raw, marshalErr := json.Marshal(v)
+	if marshalErr != nil {
+		return "", "", fmt.Errorf("re-encoding a judgement from %s: %w", query, marshalErr)
 	}
 
-	raw, err := json.Marshal(v)
-	if err != nil {
-		return Finding{}, fmt.Errorf("re-encoding finding: %w", err)
-	}
 	var decoded struct {
-		Resource string   `json:"resource"`
-		Score    *float64 `json:"score"`
-		Msg      string   `json:"msg"`
+		Resource string `json:"resource"`
+		Reason   string `json:"reason"`
 	}
 	if err := json.Unmarshal(raw, &decoded); err != nil {
-		return Finding{}, fmt.Errorf("finding is neither a string nor an object with msg/score/resource: %s", raw)
+		return "", "", fmt.Errorf("%s produced %s, want an object with \"resource\" and \"reason\"", query, raw)
 	}
-	if decoded.Msg == "" {
-		return Finding{}, fmt.Errorf("finding is missing the required \"msg\" field: %s", raw)
+	if decoded.Resource == "" {
+		return "", "", fmt.Errorf("%s produced a judgement with no \"resource\", so it cannot be attached to a change: %s", query, raw)
+	}
+	if decoded.Reason == "" {
+		return "", "", fmt.Errorf("%s produced a judgement with no \"reason\" for %s — say why, it goes in the summary", query, decoded.Resource)
+	}
+	return decoded.Resource, decoded.Reason, nil
+}
+
+// orderedReasons lists reasons most severe first, so the summary leads with
+// what actually decided the change.
+func orderedReasons(byVerdict map[Verdict][]string) []string {
+	var out []string
+	for _, verdict := range []Verdict{Deny, Review, Pass} {
+		reasons := append([]string(nil), byVerdict[verdict]...)
+		sort.Strings(reasons)
+		out = append(out, reasons...)
+	}
+	return out
+}
+
+// resourceChanges pulls the resource_changes array out of a plan, returning
+// nothing when it is absent or the wrong shape.
+func resourceChanges(plan any) []map[string]any {
+	doc, ok := plan.(map[string]any)
+	if !ok {
+		return nil
+	}
+	raw, ok := doc["resource_changes"].([]any)
+	if !ok {
+		return nil
 	}
 
-	score := DefaultScore
-	if decoded.Score != nil {
-		// A negative score would let one rule cancel out the risk another
-		// rule found, so refuse it rather than quietly summing it in.
-		if *decoded.Score < 0 {
-			return Finding{}, fmt.Errorf("finding scores %v: a score cannot be negative, because scores add up and a negative one would mask real risk elsewhere in the plan: %s", *decoded.Score, raw)
+	out := make([]map[string]any, 0, len(raw))
+	for _, entry := range raw {
+		if rc, ok := entry.(map[string]any); ok {
+			out = append(out, rc)
 		}
-		// Round rather than truncate: a computed 0.6 must not become 0, the
-		// one value that means "allowed".
-		score = int(math.Round(*decoded.Score))
 	}
-	return Finding{Resource: decoded.Resource, Score: score, Msg: decoded.Msg}, nil
+	return out
+}
+
+func stringField(m map[string]any, key string) string {
+	s, _ := m[key].(string)
+	return s
+}
+
+func actions(rc map[string]any) []string {
+	change, ok := rc["change"].(map[string]any)
+	if !ok {
+		return nil
+	}
+	raw, ok := change["actions"].([]any)
+	if !ok {
+		return nil
+	}
+	out := make([]string, 0, len(raw))
+	for _, a := range raw {
+		if s, ok := a.(string); ok {
+			out = append(out, s)
+		}
+	}
+	return out
+}
+
+// isNoOp reports whether a resource change does nothing at all.
+func isNoOp(rc map[string]any) bool {
+	acts := actions(rc)
+	return len(acts) == 1 && acts[0] == "no-op"
 }

@@ -1,23 +1,25 @@
 # Examples
 
-A worked policy in [policies/kafka.rego](policies/kafka.rego) and one plan per
-scenario in [plans/](plans/). Every score below is asserted by
+A worked policy in [policies/kafka.rego](policies/kafka.rego), the smallest
+possible one in [policies/data-reads.rego](policies/data-reads.rego), and one
+plan per scenario in [plans/](plans/). Every verdict below is asserted by
 `examples_test.go`, so they cannot drift from the policy.
 
-| Plan | Score | Why |
+| Plan | Verdict | Why |
 |---|---|---|
-| `kafka-topic-create.json` | 0 | Additive and easy to undo |
-| `data-source-read.json` | 0 | Reading a data source changes nothing |
-| `no-op.json` | 0 | Nothing changes |
-| `kafka-topic-delete.json` | 80 | Destroys the topic's data |
-| `kafka-acl-wildcard.json` | 90 | `User:*` on `*` grants far more than it looks like |
-| `unclassified-resource.json` | 100 | No policy claims `aws_s3_bucket` |
-| `managed-resource-read-lookalike.json` | 100 | A *managed* resource, so the data-read rule does not apply |
+| `kafka-topic-create.json` | pass | Additive and easy to undo |
+| `data-source-read.json` | pass | Reading a data source changes nothing |
+| `no-op.json` | pass | Nothing changes, so nothing needs a rule |
+| `kafka-topic-delete.json` | review | Destroys data — recoverable, but somebody should say so |
+| `kafka-acl-wildcard.json` | **deny** | `User:*` on `*` grants unbounded access |
+| `unclassified-resource.json` | **deny** | No rule matches an `aws_s3_bucket` |
+| `managed-resource-read-lookalike.json` | **deny** | A *managed* resource, so the data-read rule does not apply |
 
-The last two are the interesting ones. Nothing green-flags an `aws_s3_bucket`,
-so it scores the maximum. And `managed-resource-read-lookalike.json` has the
-same `["read"]` action as `data-source-read.json` but `mode: "managed"` — the
-green-flag rule checks both, so it does not match.
+The last two are the interesting ones. Nothing matches an `aws_s3_bucket`, so
+it is denied for want of a rule rather than by one. And
+`managed-resource-read-lookalike.json` has the same `["read"]` action as
+`data-source-read.json` but `mode: "managed"` — the allow rule checks both, so
+it does not match, and the change is denied.
 
 ## Try it
 
@@ -25,76 +27,50 @@ green-flag rule checks both, so it does not match.
 blastdoor eval --plan plans/kafka-topic-delete.json --policy policies
 ```
 
-Add `--no-base-policy` to see only your own rules fire, which is useful when
-working out why something scored 100.
-
 ## The loop for writing a policy
 
 1. Get a plan to work against: `tofu show -json tfplan > plan.json`, or copy one
    from `plans/` and edit it.
 2. Write the rule, then run `blastdoor eval --plan plan.json --policy .`
-3. Score still 100? The change isn't in `classified` yet — the backstop is
-   still counting it.
+3. Still denied? Nothing matched it. The summary prints the address and
+   `no policy judges this change`, which is the rule you still owe.
 
-## The two halves of a rule
+## Choosing a verdict
 
-Scoring and claiming are separate on purpose:
+Ask what should happen, not how bad it is:
 
-```rego
-deny contains {"msg": ..., "score": 80, "resource": rc.address} if { ... }
-classified contains rc.address if { ... }
-```
-
-`deny` says how risky a change is. `classified` says "a rule has looked at
-this". Without the second half, your score is *added to* the backstop's 100
-rather than replacing it.
-
-That split is what makes a gap in your rules visible: in `kafka.rego`,
-`classified` only claims create/update/delete, so a Kafka topic *replace* — a
-shape none of the rules score — still comes out at 100 rather than silently
-scoring 0.
-
-## Green-flagging
-
-A score of 0 is how a policy says "this is fine". `data-reads.rego` is the
-smallest complete example: score it 0, then claim it.
-
-Keep the claim as narrow as the rule. `data-reads.rego` checks both
-`mode == "data"` and `actions == ["read"]`, so it green-flags a data source
-read and nothing else — a managed resource with the same action still scores
-100. A claim broader than the rule that justifies it is how changes slip
-through unscored.
-
-Most modules read something, so without a rule like this every plan needs
-review and the gate stops meaning anything. Copy it as-is if that fits.
-
-## What can never be green-flagged
-
-The backstop is not a policy you can outrank. It fires for anything no rule
-claims, and:
-
-- **A score can't be negative.** Scores add up, so a negative one would mask
-  risk found elsewhere in the plan. Blastdoor rejects it.
-- **A fraction rounds away from 0.** `0.6` becomes `1`, never the `0` that
-  means allowed.
-- **A finding with no `score` is 100**, not 0.
-- **Anything that isn't plan JSON is an error**, not a score of 0 — so a
-  truncated file or state output can't look like a clean plan.
-
-`--no-base-policy` turns the backstop off. It exists for debugging your own
-rules in isolation; nothing scores 100 by default once you pass it, so keep it
-out of CI.
-
-## Scoring scale
-
-Scores sum across every change in the merge request, so blast radius adds up.
-The default threshold is 50.
-
-| Kind of change | Score |
+| Ask | Verdict |
 |---|---|
-| Additive, easily reversed | 0–10 |
-| Widens access, but scoped | 20 |
-| Reduces redundancy, deletes a user | 60 |
-| Destroys data | 80 |
-| Wildcard grant, shrinks a topic | 90 |
-| Nothing classified it | 100 |
+| Would I be happy for this to merge with nobody looking? | `allow` |
+| Is this fine, but somebody should know and sign it off? | `review` |
+| Should this never happen without changing the policy first? | `deny` |
+
+`review` and `deny` differ in how they are cleared. A review is a question for a
+person, and approving answers it. A denial says this should not happen — it is
+cleared by changing the plan, or by changing the rule, not by approving.
+
+Rules for the same change combine, and **the most severe wins**. So a broad
+`review` plus a narrow `deny` for the dangerous case reads exactly as you would
+hope, and adding a rule can never weaken an existing one.
+
+## Allowing
+
+`data-reads.rego` is the smallest complete example. Keep the match as narrow as
+the reason justifying it: it checks both `mode == "data"` and
+`actions == ["read"]`, so a managed resource with the same action is untouched
+by it and stays denied.
+
+Most modules read something, so without a rule like this every plan is denied
+and the gate stops meaning anything. Copy it as-is if that fits.
+
+## What no rule can do
+
+- **Nothing weakens by addition.** The most severe matching verdict wins, so a
+  new rule can only ever tighten the outcome.
+- **A judgement must name a `resource` and a `reason.`** No resource and it
+  cannot be attached to a change; no reason and the reviewer has nothing to
+  read. Both are errors, not warnings.
+- **A change no rule matches is denied**, and that is decided by blastdoor from
+  the plan itself, not by a rule that has to fire.
+- **Anything that isn't plan JSON is an error**, so a truncated file or state
+  output can't look like a clean plan.

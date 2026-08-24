@@ -16,12 +16,12 @@ var Version = "dev"
 func NewRootCmd() *cobra.Command {
 	root := &cobra.Command{
 		Use:   "blastdoor",
-		Short: "Score Terraform/OpenTofu plans against OPA policies and gate merge requests",
-		Long: `Blastdoor scores a Terraform/OpenTofu/Terragrunt plan against Rego policies
+		Short: "Judge Terraform/OpenTofu plans against OPA policies and gate merge requests",
+		Long: `Blastdoor judges a Terraform/OpenTofu/Terragrunt plan against Rego policies
 and decides whether a change can merge on its own or needs a human.
 
-Every resource change starts at the maximum score. Policies bring it down by
-classifying changes they consider understood, so a plan touching something no
+Every change comes back pass, review or deny, and the worst one decides the
+plan. A change no policy matches is denied, so a plan touching something no
 policy covers is never waved through.`,
 		SilenceUsage:  true,
 		SilenceErrors: true,

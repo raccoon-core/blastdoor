@@ -39,6 +39,17 @@ in each unit.`,
 			if err != nil {
 				return err
 			}
+
+			// Own the output directory outright. A plan.json committed to
+			// the repository at this path would otherwise be scored as if
+			// this job had produced it — a free way to pad the report with
+			// a harmless-looking unit.
+			if err := os.RemoveAll(outDir); err != nil {
+				return fmt.Errorf("clearing %s: %w", outDir, err)
+			}
+			if err := os.MkdirAll(outDir, 0o755); err != nil {
+				return fmt.Errorf("creating %s: %w", outDir, err)
+			}
 			if len(resolved) == 0 {
 				fmt.Fprintln(cmd.ErrOrStderr(), "no units to plan")
 				return nil

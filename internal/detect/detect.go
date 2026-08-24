@@ -29,7 +29,7 @@ type Options struct {
 // Changed returns the units affected by the diff between BaseRef and HeadRef,
 // sorted and de-duplicated.
 func Changed(opts Options) ([]string, error) {
-	changed, err := changedFiles(opts)
+	changed, err := ChangedFiles(opts)
 	if err != nil {
 		return nil, err
 	}
@@ -92,8 +92,7 @@ func FindUnits(repoDir, root string) ([]string, error) {
 func affected(units, changed []string, root string) []string {
 	changedInDir := map[string]bool{}
 	for _, f := range changed {
-		ext := path.Ext(f)
-		if ext != ".hcl" && ext != ".tf" {
+		if !affectsPlan(f) {
 			continue
 		}
 		changedInDir[path.Dir(f)] = true
@@ -116,7 +115,8 @@ func affected(units, changed []string, root string) []string {
 	return out
 }
 
-func changedFiles(opts Options) ([]string, error) {
+// ChangedFiles lists the paths that differ between BaseRef and HeadRef.
+func ChangedFiles(opts Options) ([]string, error) {
 	if opts.BaseRef == "" {
 		return nil, fmt.Errorf("no base ref: pass --base-ref or set CI_MERGE_REQUEST_DIFF_BASE_SHA")
 	}
@@ -139,4 +139,18 @@ func changedFiles(opts Options) ([]string, error) {
 		}
 	}
 	return files, nil
+}
+
+// affectsPlan reports whether changing this file could change a plan.
+//
+// Variable files count: a .tfvars edit changes what gets applied while
+// touching no .tf at all, and missing it would leave that unit unplanned and
+// so ungated.
+func affectsPlan(file string) bool {
+	switch path.Ext(file) {
+	case ".hcl", ".tf", ".tfvars":
+		return true
+	}
+	// Ext only sees ".json" for these, so match the full suffix.
+	return strings.HasSuffix(file, ".tf.json") || strings.HasSuffix(file, ".tfvars.json")
 }

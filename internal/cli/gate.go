@@ -10,6 +10,7 @@ import (
 	"strings"
 
 	"github.com/raccoon-core/blastdoor/internal/gitlabapi"
+	"github.com/raccoon-core/blastdoor/internal/policy"
 	"github.com/raccoon-core/blastdoor/internal/report"
 	"github.com/spf13/cobra"
 )
@@ -32,12 +33,14 @@ func newGateCmd() *cobra.Command {
 
 	cmd := &cobra.Command{
 		Use:   "gate",
-		Short: "Gate a GitLab merge request on the risk score",
+		Short: "Gate a GitLab merge request on the verdict",
 		Long: `Reads the report written by 'blastdoor eval' and acts on the merge request.
 
-Above the threshold it creates or updates an approval rule, so a human has to
-approve. Below it, it approves the merge request itself and — with
---auto-merge — queues the merge for when the pipeline succeeds.
+  pass    approves it, and with --auto-merge queues the merge
+  review  requires a human approval
+  deny    requires an approval and fails the job, so the pipeline is red too —
+          a denial is settled by changing the plan or the policy, not by
+          approving it
 
 A 401 or 403 from GitLab fails the command: a token that cannot reach the API
 must not be mistaken for a change that needs no gate.`,
@@ -79,7 +82,7 @@ must not be mistaken for a change that needs no gate.`,
 				fmt.Fprintf(out, "posted risk summary to !%d\n", iid)
 			}
 
-			if rep.Decision == report.DecisionReviewRequired {
+			if rep.Verdict != policy.Pass {
 				groups, err := parseGroupIDs(approverIDs)
 				if err != nil {
 					return err
@@ -87,11 +90,27 @@ must not be mistaken for a change that needs no gate.`,
 				if len(groups) == 0 {
 					fmt.Fprintln(cmd.ErrOrStderr(), "warning: no --approver-group-id given, so the rule accepts any eligible approver")
 				}
+				// Withdraw any approval blastdoor gave when this merge
+				// request still passed. Without this, a push that makes the
+				// change worse is waved through by the approval the previous,
+				// safer push earned.
+				if err := client.Unapprove(ctx, iid); err != nil {
+					return fmt.Errorf("withdrawing the earlier approval on !%d: %w", iid, err)
+				}
 				if err := client.SetApprovalRule(ctx, iid, ruleName, 1, groups); err != nil {
 					return fmt.Errorf("setting approval rule %q: %w", ruleName, err)
 				}
-				fmt.Fprintf(out, "score %d >= threshold %d — !%d now requires an approval via rule %q\n",
-					rep.TotalScore, rep.Threshold, iid, ruleName)
+
+				if rep.Verdict == policy.Deny {
+					// A denial is not something an approval settles. Fail the
+					// job so the pipeline is red too, and the change has to
+					// alter either the plan or the policy.
+					fmt.Fprintf(out, "denied: %d change(s) no policy allows — !%d blocked\n", rep.Counts[policy.Deny], iid)
+					return fmt.Errorf("denied by policy: %d change(s) not allowed", rep.Counts[policy.Deny])
+				}
+
+				fmt.Fprintf(out, "review required: %d change(s) — !%d now needs an approval via rule %q\n",
+					rep.Counts[policy.Review], iid, ruleName)
 				return nil
 			}
 
@@ -104,7 +123,7 @@ must not be mistaken for a change that needs no gate.`,
 				return nil
 			}
 
-			fmt.Fprintf(out, "score %d < threshold %d — approving !%d\n", rep.TotalScore, rep.Threshold, iid)
+			fmt.Fprintf(out, "every change passes — approving !%d\n", iid)
 
 			// Approve rather than relaxing an existing rule to zero: a rule
 			// left over from an earlier, riskier push is then satisfied by a
@@ -127,7 +146,7 @@ must not be mistaken for a change that needs no gate.`,
 	cmd.Flags().StringVar(&summaryPath, "summary", ".blastdoor/summary.md", "summary.md to post as a note")
 	cmd.Flags().StringVar(&ruleName, "rule-name", "blastdoor", "name of the approval rule to manage")
 	cmd.Flags().StringArrayVar(&approverIDs, "approver-group-id", splitList(os.Getenv("BLASTDOOR_APPROVER_GROUP_IDS")), "GitLab group id allowed to approve (repeatable)")
-	cmd.Flags().BoolVar(&autoMerge, "auto-merge", false, "queue the merge when the score is below the threshold")
+	cmd.Flags().BoolVar(&autoMerge, "auto-merge", false, "queue the merge when every change passes")
 	cmd.Flags().BoolVar(&squash, "squash", true, "squash commits when auto-merging")
 	cmd.Flags().IntVar(&mrIID, "mr-iid", envInt("CI_MERGE_REQUEST_IID", 0), "merge request IID (default $CI_MERGE_REQUEST_IID)")
 	cmd.Flags().StringVar(&branch, "branch", envOr("CI_COMMIT_BRANCH", ""), "source branch, used to find the MR on a branch pipeline")

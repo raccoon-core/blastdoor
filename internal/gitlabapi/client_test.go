@@ -194,3 +194,43 @@ func TestMergeWhenPipelineSucceeds(t *testing.T) {
 		t.Errorf("body = %v", req.body)
 	}
 }
+
+// Raising the gate must withdraw the approval blastdoor gave when the merge
+// request was still under the threshold.
+func TestUnapprove(t *testing.T) {
+	client, got := server(t, func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte(`{}`))
+	})
+
+	if err := client.Unapprove(context.Background(), 7); err != nil {
+		t.Fatalf("Unapprove: %v", err)
+	}
+
+	req := (*got)[0]
+	if req.method != http.MethodPost || req.path != "/projects/42/merge_requests/7/unapprove" {
+		t.Errorf("%s %s", req.method, req.path)
+	}
+}
+
+// There may be no approval to withdraw, which is not a failure.
+func TestUnapproveToleratesNoExistingApproval(t *testing.T) {
+	for _, status := range []int{http.StatusNotFound, http.StatusUnauthorized} {
+		client, _ := server(t, func(w http.ResponseWriter, _ *http.Request) {
+			w.WriteHeader(status)
+			_, _ = w.Write([]byte(`{"message":"nope"}`))
+		})
+		if err := client.Unapprove(context.Background(), 7); err != nil {
+			t.Errorf("status %d: %v, want nil", status, err)
+		}
+	}
+}
+
+// A 403 means the token cannot act, which must not pass silently.
+func TestUnapproveStillFailsOnForbidden(t *testing.T) {
+	client, _ := server(t, func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusForbidden)
+	})
+	if err := client.Unapprove(context.Background(), 7); err == nil {
+		t.Error("a 403 was swallowed")
+	}
+}

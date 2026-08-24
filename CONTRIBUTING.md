@@ -1,5 +1,8 @@
 # Contributing
 
+Working on this with an AI agent? [AGENTS.md](AGENTS.md) covers the decisions
+that look like accidents but are not.
+
 ## Getting set up
 
 Go 1.27+ and Docker. Nothing else — the Go toolchain line in `go.mod` pulls the
@@ -17,8 +20,8 @@ make image   # local docker image
 |---|---|
 | `cmd/blastdoor` | Entry point |
 | `internal/cli` | One file per command |
-| `internal/policy` | OPA evaluation, plus `base.rego`, the default-deny backstop |
-| `internal/report` | Scoring and the JSON/Markdown/dotenv output |
+| `internal/policy` | OPA evaluation and the three verdicts |
+| `internal/report` | Folding verdicts into one, and the JSON/Markdown/dotenv output |
 | `internal/detect` | Which units a git diff touches |
 | `internal/runner` | Shelling out to tofu/terraform/terragrunt |
 | `internal/gitlabapi` | The GitLab REST calls the gate needs |
@@ -38,19 +41,27 @@ Table-driven where it helps, real behaviour over mocks:
 - `internal/detect` builds actual git repositories in `t.TempDir()`.
 - `internal/gitlabapi` uses `httptest`, asserting on method, path and body.
 - `internal/policy` compiles real Rego.
-- `examples/examples_test.go` asserts the documented example scores.
+- `examples/examples_test.go` asserts the documented example verdicts.
 
 If you change an example policy, update the table in `examples/README.md` and
-the scores in `examples_test.go` — the test fails if you add a plan without one.
+the verdicts in `examples_test.go` — the test fails if you add a plan without
+one.
 
-## Changing the risk model
+## Changing the verdict model
 
-The backstop in `internal/policy/base.rego` is the tool's whole thesis: an
-unclassified change scores 100. Be deliberate about anything that could let a
-change through unscored, and add a test that would fail if it did.
+Two invariants carry the whole tool, and both live in `internal/policy`:
 
-`policy.DefaultScore` is what a finding gets when a rule omits `score`. It is
-the maximum on purpose: an under-specified rule should fail closed.
+- **A change no rule matches is denied.** `Evaluate` decides that from the plan
+  itself, not from a policy rule that has to fire — a rule that does not run
+  must not be the difference between judged and waved through.
+- **The most severe matching verdict wins** (`Worse`). This is what makes rules
+  safe to add: a new one can only ever tighten the outcome, so nobody weakens
+  the gate by contributing.
+
+Be deliberate about anything that could let a change through unjudged, and add
+a test that would fail if it did. There is no score and no threshold; if you
+find yourself reaching for one, the question is probably which of the three
+verdicts a change deserves.
 
 ## Adding support for another forge
 
@@ -70,7 +81,7 @@ Releases come from the commits, so the subject line matters:
 | `chore:`, `docs:`, `refactor:`, `test:`, `ci:` | No release |
 
 ```
-feat(policy): score replace actions separately
+feat(policy): deny replace actions on prod topics
 
 fix(gate): treat 403 as fatal instead of skipping the gate
 ```
@@ -101,9 +112,6 @@ Two limits worth knowing:
 - **A pull request from a fork gets no image.** Forked runs receive a read-only
   token and cannot write packages, so the publish step is skipped rather than
   failing the run.
-
-One-time setup: the first push creates the package as private. Make it public
-in the package settings, or anyone pulling a preview needs a GitHub token.
 
 ## Releasing
 

@@ -9,7 +9,9 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strings"
 
+	"github.com/raccoon-core/blastdoor/internal/detect"
 	"github.com/raccoon-core/blastdoor/internal/policy"
 	"github.com/raccoon-core/blastdoor/internal/report"
 	"github.com/spf13/cobra"
@@ -17,27 +19,30 @@ import (
 
 func newEvalCmd() *cobra.Command {
 	var (
-		planFiles    []string
-		planDir      string
-		policyPaths  []string
-		query        string
-		noBasePolicy bool
-		threshold    int
-		outDir       string
-		failOnReview bool
+		planFiles   []string
+		planDir     string
+		policyPaths []string
+		outDir      string
+		failOnBlock bool
+		guardPaths  []string
+		baseRef     string
+		headRef     string
 	)
 
 	cmd := &cobra.Command{
 		Use:   "eval",
-		Short: "Score plan JSON against policies",
-		Long: `Evaluates plan JSON against Rego policies and writes report.json, summary.md
-and blastdoor.env into --out-dir.
+		Short: "Judge plan JSON against policies",
+		Long: `Judges every change in a plan against Rego policies and writes report.json,
+summary.md and blastdoor.env into --out-dir.
+
+Each change comes back pass, review or deny, and the worst one decides the
+plan. A change no policy matches is denied.
 
 Point --plan at a single file while writing policies:
 
   blastdoor eval --plan examples/plans/kafka-topic-create.json --policy examples/policies
 
-or --plan-dir at the tree 'blastdoor plan' produced, to score a whole change.`,
+or --plan-dir at the tree 'blastdoor plan' produced, to judge a whole change.`,
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			plans, err := collectPlans(planFiles, planDir)
@@ -51,11 +56,7 @@ or --plan-dir at the tree 'blastdoor plan' produced, to score a whole change.`,
 				return fmt.Errorf("no plan JSON to score: pass --plan or --plan-dir")
 			}
 
-			evaluator, err := policy.New(cmd.Context(), policy.Options{
-				PolicyPaths:  policyPaths,
-				Query:        query,
-				NoBasePolicy: noBasePolicy,
-			})
+			evaluator, err := policy.New(cmd.Context(), policy.Options{PolicyPaths: policyPaths})
 			if err != nil {
 				return err
 			}
@@ -76,14 +77,27 @@ or --plan-dir at the tree 'blastdoor plan' produced, to score a whole change.`,
 					return fmt.Errorf("%s: %w", p.file, err)
 				}
 
-				findings, err := evaluator.Evaluate(cmd.Context(), decoded)
+				res, err := evaluator.Evaluate(cmd.Context(), decoded)
 				if err != nil {
 					return fmt.Errorf("%s: %w", p.file, err)
 				}
-				units = append(units, report.Unit{Path: p.name, Findings: findings})
+				units = append(units, report.Unit{Path: p.name, Changes: res.Changes})
 			}
 
-			rep := report.Build(units, threshold)
+			rep := report.Build(units)
+
+			// A change that edits its own policies or pipeline cannot be
+			// judged by them, so hand it to a person whatever it scored.
+			if len(guardPaths) > 0 {
+				if baseRef == "" {
+					baseRef = envOr("CI_MERGE_REQUEST_DIFF_BASE_SHA", "")
+				}
+				tripped, err := trippedGuards(guardPaths, baseRef, headRef)
+				if err != nil {
+					return err
+				}
+				rep.RequireReview(tripped)
+			}
 
 			if err := writeReport(rep, outDir); err != nil {
 				return err
@@ -92,8 +106,11 @@ or --plan-dir at the tree 'blastdoor plan' produced, to score a whole change.`,
 				return err
 			}
 
-			if failOnReview && rep.Decision == report.DecisionReviewRequired {
-				return fmt.Errorf("total risk score %d is at or above the threshold of %d", rep.TotalScore, rep.Threshold)
+			if failOnBlock && rep.Verdict != policy.Pass {
+				if len(rep.Guarded) > 0 {
+					return fmt.Errorf("%s: this change edits guarded paths (%s)", rep.Verdict, strings.Join(rep.Guarded, ", "))
+				}
+				return fmt.Errorf("verdict is %s", rep.Verdict)
 			}
 			return nil
 		},
@@ -102,11 +119,11 @@ or --plan-dir at the tree 'blastdoor plan' produced, to score a whole change.`,
 	cmd.Flags().StringArrayVar(&planFiles, "plan", nil, "plan JSON file to score (repeatable)")
 	cmd.Flags().StringVar(&planDir, "plan-dir", "", "directory tree of plan.json files, as written by 'blastdoor plan'")
 	cmd.Flags().StringArrayVar(&policyPaths, "policy", nil, "policy directory or .rego file (repeatable)")
-	cmd.Flags().StringVar(&query, "query", policy.DefaultQuery, "rule to evaluate")
-	cmd.Flags().BoolVar(&noBasePolicy, "no-base-policy", false, "drop the built-in default-deny backstop")
-	cmd.Flags().IntVar(&threshold, "threshold", envInt("BLASTDOOR_THRESHOLD", 50), "score at or above which review is required")
 	cmd.Flags().StringVar(&outDir, "out-dir", ".blastdoor", "directory to write report.json, summary.md and blastdoor.env into")
-	cmd.Flags().BoolVar(&failOnReview, "fail-on-review", false, "exit non-zero when review is required")
+	cmd.Flags().BoolVar(&failOnBlock, "fail-on-block", false, "exit non-zero unless every change passes")
+	cmd.Flags().StringArrayVar(&guardPaths, "guard-path", nil, "path whose modification forces review whatever the score (repeatable)")
+	cmd.Flags().StringVar(&baseRef, "base-ref", "", "git ref to diff from for --guard-path (default $CI_MERGE_REQUEST_DIFF_BASE_SHA)")
+	cmd.Flags().StringVar(&headRef, "head-ref", "HEAD", "git ref to diff to for --guard-path")
 
 	return cmd
 }
@@ -184,4 +201,34 @@ func writeReport(rep report.Report, outDir string) error {
 		}
 	}
 	return nil
+}
+
+// trippedGuards returns the changed files that fall under a guarded path.
+func trippedGuards(guardPaths []string, baseRef, headRef string) ([]string, error) {
+	changed, err := detect.ChangedFiles(detect.Options{BaseRef: baseRef, HeadRef: headRef})
+	if err != nil {
+		return nil, fmt.Errorf("--guard-path needs a diff: %w", err)
+	}
+
+	var tripped []string
+	for _, file := range changed {
+		if matchesGuard(file, guardPaths) {
+			tripped = append(tripped, filepath.ToSlash(filepath.Clean(file)))
+		}
+	}
+	return tripped, nil
+}
+
+// matchesGuard reports whether a changed file is the guarded path itself or
+// sits underneath it.
+func matchesGuard(file string, guardPaths []string) bool {
+	f := filepath.ToSlash(filepath.Clean(file))
+	for _, guard := range guardPaths {
+		g := filepath.ToSlash(filepath.Clean(guard))
+		// The trailing slash keeps "policy" from matching "policyholder".
+		if f == g || strings.HasPrefix(f, g+"/") {
+			return true
+		}
+	}
+	return false
 }

@@ -1,6 +1,6 @@
 // Package examples_test keeps the shipped examples honest: every plan in
-// examples/plans/ must still score what examples/README.md says it does.
-// Change a policy and forget the docs, and this fails.
+// examples/plans/ must still come back with the verdict examples/README.md
+// says it does. Change a policy and forget the docs, and this fails.
 package examples_test
 
 import (
@@ -13,15 +13,15 @@ import (
 	"github.com/raccoon-core/blastdoor/internal/policy"
 )
 
-func TestExamplePlansScoreAsDocumented(t *testing.T) {
-	want := map[string]int{
-		"data-source-read.json":                0,
-		"kafka-topic-create.json":              0,
-		"kafka-topic-delete.json":              80,
-		"kafka-acl-wildcard.json":              90,
-		"unclassified-resource.json":           100,
-		"managed-resource-read-lookalike.json": 100,
-		"no-op.json":                           0,
+func TestExamplePlansJudgeAsDocumented(t *testing.T) {
+	want := map[string]policy.Verdict{
+		"kafka-topic-create.json":              policy.Pass,
+		"data-source-read.json":                policy.Pass,
+		"no-op.json":                           policy.Pass,
+		"kafka-topic-delete.json":              policy.Review,
+		"kafka-acl-wildcard.json":              policy.Deny,
+		"unclassified-resource.json":           policy.Deny,
+		"managed-resource-read-lookalike.json": policy.Deny,
 	}
 
 	evaluator, err := policy.New(context.Background(), policy.Options{
@@ -36,7 +36,7 @@ func TestExamplePlansScoreAsDocumented(t *testing.T) {
 		t.Fatalf("listing plans: %v", err)
 	}
 	if len(plans) != len(want) {
-		t.Fatalf("found %d example plans but %d expected scores — add the new plan to this test and to examples/README.md", len(plans), len(want))
+		t.Fatalf("found %d example plans but %d expected verdicts — add the new plan to this test and to examples/README.md", len(plans), len(want))
 	}
 
 	for _, path := range plans {
@@ -44,7 +44,7 @@ func TestExamplePlansScoreAsDocumented(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			expected, ok := want[name]
 			if !ok {
-				t.Fatalf("no expected score for %s", name)
+				t.Fatalf("no expected verdict for %s", name)
 			}
 
 			raw, err := os.ReadFile(path)
@@ -56,17 +56,13 @@ func TestExamplePlansScoreAsDocumented(t *testing.T) {
 				t.Fatalf("parsing: %v", err)
 			}
 
-			findings, err := evaluator.Evaluate(context.Background(), decoded)
+			res, err := evaluator.Evaluate(context.Background(), decoded)
 			if err != nil {
 				t.Fatalf("evaluating: %v", err)
 			}
 
-			total := 0
-			for _, f := range findings {
-				total += f.Score
-			}
-			if total != expected {
-				t.Errorf("score = %d, want %d (findings: %+v)", total, expected, findings)
+			if res.Verdict != expected {
+				t.Errorf("verdict = %q, want %q (changes: %+v)", res.Verdict, expected, res.Changes)
 			}
 		})
 	}

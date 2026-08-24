@@ -2,198 +2,257 @@ package policy
 
 import (
 	"context"
-	"encoding/json"
 	"os"
 	"testing"
 )
 
-// plan builds plan JSON with a single resource change.
-func plan(t *testing.T, address, resourceType string, actions ...string) any {
-	t.Helper()
-	raw := map[string]any{
-		"resource_changes": []any{
-			map[string]any{
-				"address": address,
-				"type":    resourceType,
-				"change":  map[string]any{"actions": toAny(actions)},
-			},
-		},
+func change(address, resourceType string, actions ...string) map[string]any {
+	acts := make([]any, len(actions))
+	for i, a := range actions {
+		acts[i] = a
 	}
-	// Round-trip so the input matches what a real plan file decodes to.
-	encoded, err := json.Marshal(raw)
-	if err != nil {
-		t.Fatalf("encoding plan: %v", err)
+	return map[string]any{
+		"address": address,
+		"type":    resourceType,
+		"change":  map[string]any{"actions": acts},
 	}
-	var decoded any
-	if err := json.Unmarshal(encoded, &decoded); err != nil {
-		t.Fatalf("decoding plan: %v", err)
-	}
-	return decoded
 }
 
-func toAny(s []string) []any {
-	out := make([]any, len(s))
-	for i, v := range s {
-		out[i] = v
+func planDoc(changes ...map[string]any) map[string]any {
+	entries := make([]any, len(changes))
+	for i, c := range changes {
+		entries[i] = c
 	}
-	return out
+	return map[string]any{"format_version": "1.2", "resource_changes": entries}
 }
 
-func evaluate(t *testing.T, opts Options, input any) []Finding {
+func writePolicy(t *testing.T, body string) string {
 	t.Helper()
+	dir := t.TempDir()
+	if err := os.WriteFile(dir+"/policy.rego", []byte(body), 0o600); err != nil {
+		t.Fatalf("writing policy: %v", err)
+	}
+	return dir
+}
+
+func judge(t *testing.T, policyBody string, plan map[string]any) Result {
+	t.Helper()
+	opts := Options{}
+	if policyBody != "" {
+		opts.PolicyPaths = []string{writePolicy(t, policyBody)}
+	}
+
 	e, err := New(context.Background(), opts)
 	if err != nil {
 		t.Fatalf("compiling policies: %v", err)
 	}
-	findings, err := e.Evaluate(context.Background(), input)
+	res, err := e.Evaluate(context.Background(), plan)
 	if err != nil {
 		t.Fatalf("evaluating: %v", err)
 	}
-	return findings
+	return res
 }
 
-// The whole point of the tool: with no policies at all, nothing is waved
-// through.
-func TestBasePolicyScoresUnclassifiedAtMaximum(t *testing.T) {
-	findings := evaluate(t, Options{}, plan(t, "aws_s3_bucket.x", "aws_s3_bucket", "create"))
+// verdictFor finds one change's verdict.
+func verdictFor(t *testing.T, res Result, address string) Change {
+	t.Helper()
+	for _, c := range res.Changes {
+		if c.Address == address {
+			return c
+		}
+	}
+	t.Fatalf("no verdict for %s in %+v", address, res.Changes)
+	return Change{}
+}
 
-	if len(findings) != 1 {
-		t.Fatalf("got %d findings, want 1: %+v", len(findings), findings)
+// The core promise: no rule, no entry.
+func TestUnjudgedChangeIsDenied(t *testing.T) {
+	res := judge(t, "", planDoc(change("aws_iam_policy.admin", "aws_iam_policy", "create")))
+
+	if res.Verdict != Deny {
+		t.Errorf("verdict = %q, want %q", res.Verdict, Deny)
 	}
-	if findings[0].Score != DefaultScore {
-		t.Errorf("score = %d, want %d", findings[0].Score, DefaultScore)
+	c := verdictFor(t, res, "aws_iam_policy.admin")
+	if c.Verdict != Deny {
+		t.Errorf("change verdict = %q, want %q", c.Verdict, Deny)
 	}
-	if findings[0].Resource != "aws_s3_bucket.x" {
-		t.Errorf("resource = %q, want aws_s3_bucket.x", findings[0].Resource)
+	if len(c.Reasons) != 1 || c.Reasons[0] != ReasonUnjudged {
+		t.Errorf("reasons = %v, want [%q]", c.Reasons, ReasonUnjudged)
+	}
+	if len(res.Unjudged()) != 1 {
+		t.Errorf("Unjudged() = %v, want one change", res.Unjudged())
 	}
 }
 
-// A no-op is not a change, so the backstop must stay quiet about it.
-func TestBasePolicyIgnoresNoOp(t *testing.T) {
-	findings := evaluate(t, Options{}, plan(t, "aws_s3_bucket.x", "aws_s3_bucket", "no-op"))
-
-	if len(findings) != 0 {
-		t.Fatalf("got %d findings, want 0: %+v", len(findings), findings)
+// Every action shape needs a rule; none of them slips through unjudged.
+func TestEveryActionNeedsARule(t *testing.T) {
+	for _, actions := range [][]string{
+		{"create"}, {"update"}, {"delete"},
+		{"create", "delete"}, {"delete", "create"}, {"read"},
+	} {
+		res := judge(t, "", planDoc(change("x.y", "x", actions...)))
+		if res.Verdict != Deny {
+			t.Errorf("actions %v: verdict = %q, want %q", actions, res.Verdict, Deny)
+		}
 	}
 }
 
-// Once a policy claims a resource, the backstop defers to its score.
-func TestClassifiedResourceSuppressesBackstop(t *testing.T) {
-	dir := writePolicy(t, `package blastdoor
+// A no-op changes nothing, so it needs no rule and does not appear.
+func TestNoOpIsNotJudged(t *testing.T) {
+	res := judge(t, "", planDoc(change("x.y", "x", "no-op")))
 
-deny contains {"msg": "topic create", "score": 5, "resource": rc.address} if {
+	if len(res.Changes) != 0 {
+		t.Errorf("changes = %+v, want none", res.Changes)
+	}
+	if res.Verdict != Pass {
+		t.Errorf("verdict = %q, want %q", res.Verdict, Pass)
+	}
+}
+
+const allowEverything = `package blastdoor
+
+allow contains {"resource": rc.address, "reason": "fine"} if {
 	some rc in input.resource_changes
-	rc.type == "kafka_topic"
 }
+`
 
-classified contains rc.address if {
-	some rc in input.resource_changes
-	rc.type == "kafka_topic"
-}
-`)
+func TestAllowLetsAChangePass(t *testing.T) {
+	res := judge(t, allowEverything, planDoc(change("x.y", "x", "create")))
 
-	findings := evaluate(t, Options{PolicyPaths: []string{dir}}, plan(t, "kafka_topic.a", "kafka_topic", "create"))
-
-	if len(findings) != 1 {
-		t.Fatalf("got %d findings, want 1: %+v", len(findings), findings)
-	}
-	if findings[0].Score != 5 {
-		t.Errorf("score = %d, want 5 (the backstop should not have fired)", findings[0].Score)
+	if res.Verdict != Pass {
+		t.Errorf("verdict = %q, want %q", res.Verdict, Pass)
 	}
 }
 
-// Claiming one resource must not silence the backstop for a different one.
-func TestBackstopStillFiresForUnclaimedResource(t *testing.T) {
-	dir := writePolicy(t, `package blastdoor
-
-deny contains {"msg": "topic", "score": 5, "resource": rc.address} if {
+// The worst verdict wins, so adding a rule can only ever make a change
+// stricter — never weaker.
+func TestMostSevereVerdictWins(t *testing.T) {
+	tests := []struct {
+		name   string
+		policy string
+		want   Verdict
+	}{
+		{
+			"allow and review",
+			allowEverything + `
+review contains {"resource": rc.address, "reason": "look at it"} if {
 	some rc in input.resource_changes
-	rc.type == "kafka_topic"
+}
+`,
+			Review,
+		},
+		{
+			"allow and deny",
+			allowEverything + `
+deny contains {"resource": rc.address, "reason": "never"} if {
+	some rc in input.resource_changes
+}
+`,
+			Deny,
+		},
+		{
+			"review and deny",
+			`package blastdoor
+
+review contains {"resource": rc.address, "reason": "look"} if {
+	some rc in input.resource_changes
 }
 
-classified contains rc.address if {
+deny contains {"resource": rc.address, "reason": "never"} if {
 	some rc in input.resource_changes
-	rc.type == "kafka_topic"
 }
-`)
-
-	input := map[string]any{
-		"resource_changes": []any{
-			map[string]any{"address": "kafka_topic.a", "type": "kafka_topic", "change": map[string]any{"actions": []any{"create"}}},
-			map[string]any{"address": "aws_s3_bucket.b", "type": "aws_s3_bucket", "change": map[string]any{"actions": []any{"create"}}},
+`,
+			Deny,
 		},
 	}
 
-	findings := evaluate(t, Options{PolicyPaths: []string{dir}}, input)
-
-	byResource := map[string]int{}
-	for _, f := range findings {
-		byResource[f.Resource] = f.Score
-	}
-	if byResource["kafka_topic.a"] != 5 {
-		t.Errorf("kafka_topic.a score = %d, want 5", byResource["kafka_topic.a"])
-	}
-	if byResource["aws_s3_bucket.b"] != DefaultScore {
-		t.Errorf("aws_s3_bucket.b score = %d, want %d", byResource["aws_s3_bucket.b"], DefaultScore)
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			res := judge(t, tc.policy, planDoc(change("x.y", "x", "create")))
+			if res.Verdict != tc.want {
+				t.Errorf("verdict = %q, want %q", res.Verdict, tc.want)
+			}
+		})
 	}
 }
 
-// --no-base-policy leaves only the author's own rules.
-func TestNoBasePolicy(t *testing.T) {
-	findings := evaluate(t, Options{NoBasePolicy: true}, plan(t, "aws_s3_bucket.x", "aws_s3_bucket", "create"))
+// The plan takes the worst verdict of any change in it, with no arithmetic:
+// a hundred passing changes do not outvote one denial.
+func TestPlanTakesTheWorstChange(t *testing.T) {
+	policy := allowEverything + `
+deny contains {"resource": "bad.one", "reason": "never"} if { true }
+`
+	res := judge(t, policy, planDoc(
+		change("good.a", "good", "create"),
+		change("good.b", "good", "create"),
+		change("bad.one", "bad", "create"),
+	))
 
-	if len(findings) != 0 {
-		t.Fatalf("got %d findings, want 0: %+v", len(findings), findings)
+	if res.Verdict != Deny {
+		t.Errorf("verdict = %q, want %q", res.Verdict, Deny)
+	}
+	counts := res.Counts()
+	if counts[Pass] != 2 || counts[Deny] != 1 {
+		t.Errorf("counts = %v, want 2 pass and 1 deny", counts)
+	}
+	// The worst change is listed first, so the summary leads with it.
+	if res.Changes[0].Address != "bad.one" {
+		t.Errorf("changes are not worst-first: %+v", res.Changes)
 	}
 }
 
-// A rule that omits a score must fail closed, not score zero.
-func TestFindingWithoutScoreDefaultsToMaximum(t *testing.T) {
+// Allowing one shape must not allow a neighbouring one.
+func TestAllowIsNarrow(t *testing.T) {
+	policy := `package blastdoor
+
+allow contains {"resource": rc.address, "reason": "creating is fine"} if {
+	some rc in input.resource_changes
+	rc.change.actions == ["create"]
+}
+`
+	res := judge(t, policy, planDoc(
+		change("x.created", "x", "create"),
+		change("x.deleted", "x", "delete"),
+	))
+
+	if verdictFor(t, res, "x.created").Verdict != Pass {
+		t.Error("the create should pass")
+	}
+	if got := verdictFor(t, res, "x.deleted").Verdict; got != Deny {
+		t.Errorf("the delete verdict = %q, want %q — it was never judged", got, Deny)
+	}
+}
+
+// A judgement that names no resource cannot be attached to a change, so it is
+// an error rather than something silently dropped.
+func TestJudgementWithoutResourceIsAnError(t *testing.T) {
 	dir := writePolicy(t, `package blastdoor
 
-deny contains {"msg": "no score given", "resource": rc.address} if {
-	some rc in input.resource_changes
+allow contains {"reason": "no resource named"} if { true }
+`)
+	e, err := New(context.Background(), Options{PolicyPaths: []string{dir}})
+	if err != nil {
+		t.Fatalf("compiling: %v", err)
+	}
+	if _, err := e.Evaluate(context.Background(), planDoc(change("x.y", "x", "create"))); err == nil {
+		t.Fatal("a judgement with no resource was accepted")
+	}
 }
 
-classified contains rc.address if {
+// Every judgement has to say why, because that is what the reviewer reads.
+func TestJudgementWithoutReasonIsAnError(t *testing.T) {
+	dir := writePolicy(t, `package blastdoor
+
+allow contains {"resource": rc.address} if {
 	some rc in input.resource_changes
 }
 `)
-
-	findings := evaluate(t, Options{PolicyPaths: []string{dir}}, plan(t, "kafka_topic.a", "kafka_topic", "create"))
-
-	if len(findings) != 1 {
-		t.Fatalf("got %d findings, want 1: %+v", len(findings), findings)
+	e, err := New(context.Background(), Options{PolicyPaths: []string{dir}})
+	if err != nil {
+		t.Fatalf("compiling: %v", err)
 	}
-	if findings[0].Score != DefaultScore {
-		t.Errorf("score = %d, want %d", findings[0].Score, DefaultScore)
-	}
-}
-
-// Plain-string denies are the common conftest idiom, so they keep working.
-func TestStringFindingIsAccepted(t *testing.T) {
-	dir := writePolicy(t, `package blastdoor
-
-deny contains msg if {
-	some rc in input.resource_changes
-	msg := sprintf("%s is not allowed", [rc.address])
-}
-
-classified contains rc.address if {
-	some rc in input.resource_changes
-}
-`)
-
-	findings := evaluate(t, Options{PolicyPaths: []string{dir}}, plan(t, "kafka_topic.a", "kafka_topic", "create"))
-
-	if len(findings) != 1 {
-		t.Fatalf("got %d findings, want 1: %+v", len(findings), findings)
-	}
-	if findings[0].Msg != "kafka_topic.a is not allowed" {
-		t.Errorf("msg = %q", findings[0].Msg)
-	}
-	if findings[0].Score != DefaultScore {
-		t.Errorf("score = %d, want %d", findings[0].Score, DefaultScore)
+	if _, err := e.Evaluate(context.Background(), planDoc(change("x.y", "x", "create"))); err == nil {
+		t.Fatal("a judgement with no reason was accepted")
 	}
 }
 
@@ -205,11 +264,64 @@ func TestBrokenPolicyReportsCompileError(t *testing.T) {
 	}
 }
 
-func writePolicy(t *testing.T, body string) string {
-	t.Helper()
-	dir := t.TempDir()
-	if err := os.WriteFile(dir+"/policy.rego", []byte(body), 0o600); err != nil {
-		t.Fatalf("writing policy: %v", err)
+// Anything blastdoor cannot read as a plan is an error, never an empty plan
+// that passes.
+func TestValidatePlanRejectsNonPlans(t *testing.T) {
+	tests := []struct {
+		name string
+		doc  any
+	}{
+		{"empty object", map[string]any{}},
+		{"json array", []any{}},
+		{"json string", "not a plan"},
+		{"null", nil},
+		{"no format_version", map[string]any{"resource_changes": []any{}}},
+		{"state output", map[string]any{"format_version": "1.0", "values": map[string]any{}}},
+		{"resource_changes of the wrong type", map[string]any{"format_version": "1.2", "resource_changes": map[string]any{}}},
 	}
-	return dir
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			if err := ValidatePlan(tc.doc); err == nil {
+				t.Errorf("%s was accepted as a plan", tc.name)
+			}
+		})
+	}
+}
+
+func TestValidatePlanAcceptsRealPlans(t *testing.T) {
+	tests := []struct {
+		name string
+		doc  any
+	}{
+		{"plan with changes", planDoc(change("a.b", "a", "create"))},
+		{"plan with no changes", map[string]any{"format_version": "1.2", "resource_changes": []any{}}},
+		{"empty plan keeping only planned_values", map[string]any{"format_version": "1.2", "planned_values": map[string]any{}}},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			if err := ValidatePlan(tc.doc); err != nil {
+				t.Errorf("a real plan was rejected: %v", err)
+			}
+		})
+	}
+}
+
+func TestWorse(t *testing.T) {
+	tests := []struct {
+		a, b, want Verdict
+	}{
+		{Pass, Pass, Pass},
+		{Pass, Review, Review},
+		{Review, Pass, Review},
+		{Review, Deny, Deny},
+		{Deny, Pass, Deny},
+		{Deny, Deny, Deny},
+	}
+	for _, tc := range tests {
+		if got := Worse(tc.a, tc.b); got != tc.want {
+			t.Errorf("Worse(%q, %q) = %q, want %q", tc.a, tc.b, got, tc.want)
+		}
+	}
 }

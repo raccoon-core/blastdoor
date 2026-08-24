@@ -23,8 +23,10 @@ variables:
   BLASTDOOR_POLICY_DIR: policy
   # Directory to scan for units.
   BLASTDOOR_ROOT: .
-  # Score at or above which a human has to approve.
-  BLASTDOOR_THRESHOLD: "50"
+  # Paths that force human review when a merge request changes them, whatever
+  # the verdict. Without this, a change can rewrite the policies that judge it,
+  # or the pipeline that runs them, in the same commit.
+  BLASTDOOR_GUARD_PATHS: "$BLASTDOOR_POLICY_DIR .gitlab-ci.yml"
 
 .blastdoor:rules:
   merge_request:
@@ -47,7 +49,7 @@ blastdoor:plan:
       - $BLASTDOOR_DIR/
     expire_in: 1 day
 
-# Scores the plans and posts the summary on the merge request.
+# Judges every change and posts the summary on the merge request.
 blastdoor:eval:
   stage: risk
   image: $BLASTDOOR_IMAGE
@@ -57,11 +59,15 @@ blastdoor:eval:
   rules:
     - !reference [".blastdoor:rules", merge_request]
   script:
-    - blastdoor eval
-      --plan-dir "$BLASTDOOR_DIR"
-      --policy "$BLASTDOOR_POLICY_DIR"
-      --threshold "$BLASTDOOR_THRESHOLD"
-      --out-dir "$BLASTDOOR_DIR"
+    - |
+      guards=""
+      for p in $BLASTDOOR_GUARD_PATHS; do guards="$guards --guard-path $p"; done
+      blastdoor eval \
+        --plan-dir "$BLASTDOOR_DIR" \
+        --policy "$BLASTDOOR_POLICY_DIR" \
+        --base-ref "$CI_MERGE_REQUEST_DIFF_BASE_SHA" \
+        --out-dir "$BLASTDOOR_DIR" \
+        $guards
   artifacts:
     reports:
       dotenv: $BLASTDOOR_DIR/blastdoor.env
@@ -70,8 +76,9 @@ blastdoor:eval:
       - $BLASTDOOR_DIR/summary.md
     expire_in: 1 day
 
-# Requires an approval when the score is too high, approves when it is not.
-# Add --auto-merge if you want low-risk changes to merge on their own.
+# pass -> approves; review -> requires a human approval; deny -> also fails the
+# job, so the pipeline is red. Add --auto-merge to let passing changes merge on
+# their own.
 blastdoor:gate:
   stage: risk
   image: $BLASTDOOR_IMAGE

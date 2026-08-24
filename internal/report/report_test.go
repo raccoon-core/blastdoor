@@ -7,59 +7,99 @@ import (
 	"github.com/raccoon-core/blastdoor/internal/policy"
 )
 
-func TestBuildSumsScoresAcrossUnits(t *testing.T) {
-	rep := Build([]Unit{
-		{Path: "b", Findings: []policy.Finding{{Score: 10}, {Score: 20}}},
-		{Path: "a", Findings: []policy.Finding{{Score: 5}}},
-	}, 50)
-
-	if rep.TotalScore != 35 {
-		t.Errorf("TotalScore = %d, want 35", rep.TotalScore)
-	}
-	if rep.UnitCount != 2 {
-		t.Errorf("UnitCount = %d, want 2", rep.UnitCount)
-	}
-	// Units are sorted, so reports do not churn between runs.
-	if rep.Units[0].Path != "a" {
-		t.Errorf("units are not sorted: %v", rep.Units)
-	}
-	if rep.Units[0].Score != 5 || rep.Units[1].Score != 30 {
-		t.Errorf("per-unit scores = %d, %d; want 5, 30", rep.Units[0].Score, rep.Units[1].Score)
-	}
+func change(address string, v policy.Verdict, reasons ...string) policy.Change {
+	return policy.Change{Address: address, Verdict: v, Reasons: reasons, Actions: []string{"create"}}
 }
 
-// The threshold is inclusive: scoring exactly the threshold needs review.
-func TestDecisionThresholdIsInclusive(t *testing.T) {
+// The plan takes the worst verdict anywhere in it — no arithmetic.
+func TestBuildTakesTheWorstVerdict(t *testing.T) {
 	tests := []struct {
-		score int
-		want  Decision
+		name  string
+		units []Unit
+		want  policy.Verdict
 	}{
-		{49, DecisionPass},
-		{50, DecisionReviewRequired},
-		{51, DecisionReviewRequired},
+		{"all pass", []Unit{{Path: "a", Changes: []policy.Change{change("x", policy.Pass, "fine")}}}, policy.Pass},
+		{
+			"one review among passes",
+			[]Unit{{Path: "a", Changes: []policy.Change{
+				change("x", policy.Pass, "fine"),
+				change("y", policy.Review, "look"),
+			}}},
+			policy.Review,
+		},
+		{
+			"one deny outweighs many passes",
+			[]Unit{{Path: "a", Changes: []policy.Change{
+				change("x", policy.Pass, "fine"),
+				change("y", policy.Pass, "fine"),
+				change("z", policy.Deny, "never"),
+			}}},
+			policy.Deny,
+		},
+		{
+			"worst verdict crosses units",
+			[]Unit{
+				{Path: "a", Changes: []policy.Change{change("x", policy.Pass, "fine")}},
+				{Path: "b", Changes: []policy.Change{change("y", policy.Deny, "never")}},
+			},
+			policy.Deny,
+		},
+		{"no units", nil, policy.Pass},
 	}
 
 	for _, tc := range tests {
-		rep := Build([]Unit{{Path: "u", Findings: []policy.Finding{{Score: tc.score}}}}, 50)
-		if rep.Decision != tc.want {
-			t.Errorf("score %d: decision = %q, want %q", tc.score, rep.Decision, tc.want)
-		}
+		t.Run(tc.name, func(t *testing.T) {
+			rep := Build(tc.units)
+			if rep.Verdict != tc.want {
+				t.Errorf("verdict = %q, want %q", rep.Verdict, tc.want)
+			}
+		})
 	}
 }
 
-func TestBuildWithNoUnits(t *testing.T) {
-	rep := Build(nil, 50)
+func TestBuildCountsAndSortsUnits(t *testing.T) {
+	rep := Build([]Unit{
+		{Path: "b", Changes: []policy.Change{change("y", policy.Deny, "never")}},
+		{Path: "a", Changes: []policy.Change{change("x", policy.Pass, "fine"), change("z", policy.Review, "look")}},
+	})
 
-	if rep.TotalScore != 0 {
-		t.Errorf("TotalScore = %d, want 0", rep.TotalScore)
+	if rep.Units[0].Path != "a" {
+		t.Errorf("units are not sorted: %+v", rep.Units)
 	}
-	if rep.Decision != DecisionPass {
-		t.Errorf("Decision = %q, want %q", rep.Decision, DecisionPass)
+	if rep.Units[0].Verdict != policy.Review {
+		t.Errorf("unit a verdict = %q, want %q", rep.Units[0].Verdict, policy.Review)
+	}
+	if rep.Counts[policy.Pass] != 1 || rep.Counts[policy.Review] != 1 || rep.Counts[policy.Deny] != 1 {
+		t.Errorf("counts = %v", rep.Counts)
+	}
+}
+
+// The guard forces at least review, and never softens a denial.
+func TestRequireReview(t *testing.T) {
+	passing := Build([]Unit{{Path: "a", Changes: []policy.Change{change("x", policy.Pass, "fine")}}})
+	passing.RequireReview([]string{"policy/x.rego"})
+	if passing.Verdict != policy.Review {
+		t.Errorf("verdict = %q, want %q", passing.Verdict, policy.Review)
+	}
+
+	denied := Build([]Unit{{Path: "a", Changes: []policy.Change{change("x", policy.Deny, "never")}}})
+	denied.RequireReview([]string{"policy/x.rego"})
+	if denied.Verdict != policy.Deny {
+		t.Errorf("a denial was softened to %q", denied.Verdict)
+	}
+
+	untouched := Build([]Unit{{Path: "a", Changes: []policy.Change{change("x", policy.Pass, "fine")}}})
+	untouched.RequireReview(nil)
+	if untouched.Verdict != policy.Pass {
+		t.Errorf("verdict = %q, want %q", untouched.Verdict, policy.Pass)
 	}
 }
 
 func TestWriteEnv(t *testing.T) {
-	rep := Build([]Unit{{Path: "u", Findings: []policy.Finding{{Score: 80}}}}, 50)
+	rep := Build([]Unit{{Path: "a", Changes: []policy.Change{
+		change("x", policy.Pass, "fine"),
+		change("y", policy.Deny, "never"),
+	}}})
 
 	var b strings.Builder
 	if err := rep.WriteEnv(&b); err != nil {
@@ -67,10 +107,10 @@ func TestWriteEnv(t *testing.T) {
 	}
 
 	for _, want := range []string{
-		"BLASTDOOR_TOTAL_SCORE=80",
-		"BLASTDOOR_THRESHOLD=50",
-		"BLASTDOOR_DECISION=review-required",
+		"BLASTDOOR_VERDICT=deny",
 		"BLASTDOOR_UNIT_COUNT=1",
+		"BLASTDOOR_PASS_COUNT=1",
+		"BLASTDOOR_DENY_COUNT=1",
 	} {
 		if !strings.Contains(b.String(), want) {
 			t.Errorf("dotenv is missing %q:\n%s", want, b.String())
@@ -78,52 +118,62 @@ func TestWriteEnv(t *testing.T) {
 	}
 }
 
-func TestWriteMarkdownIncludesFindings(t *testing.T) {
-	rep := Build([]Unit{{
-		Path:     "terraform/kafka/prd",
-		Findings: []policy.Finding{{Resource: "kafka_topic.a", Score: 80, Msg: "deleting a topic"}},
-	}}, 50)
+// A denial says so plainly, and names what caused it.
+func TestWriteMarkdownForDeny(t *testing.T) {
+	rep := Build([]Unit{{Path: "terraform/prd", Changes: []policy.Change{
+		change("aws_iam_policy.admin", policy.Deny, policy.ReasonUnjudged),
+	}}})
 
 	var b strings.Builder
 	if err := rep.WriteMarkdown(&b); err != nil {
 		t.Fatalf("WriteMarkdown: %v", err)
 	}
 
-	for _, want := range []string{"Review required", "terraform/kafka/prd", "kafka_topic.a", "80", "deleting a topic"} {
+	for _, want := range []string{"Denied", "aws_iam_policy.admin", "terraform/prd", "no policy at all", "Approving does not clear this"} {
 		if !strings.Contains(b.String(), want) {
-			t.Errorf("markdown is missing %q:\n%s", want, b.String())
+			t.Errorf("summary is missing %q:\n%s", want, b.String())
 		}
 	}
 }
 
-func TestWriteMarkdownWithNoFindings(t *testing.T) {
-	rep := Build([]Unit{{Path: "terraform/kafka/prd"}}, 50)
-
+func TestWriteMarkdownForPassAndReview(t *testing.T) {
+	pass := Build([]Unit{{Path: "u", Changes: []policy.Change{change("x", policy.Pass, "additive")}}})
 	var b strings.Builder
-	if err := rep.WriteMarkdown(&b); err != nil {
+	if err := pass.WriteMarkdown(&b); err != nil {
 		t.Fatalf("WriteMarkdown: %v", err)
 	}
-
-	if !strings.Contains(b.String(), "No findings") {
-		t.Errorf("expected a no-findings note:\n%s", b.String())
+	if !strings.Contains(b.String(), "Pass") || !strings.Contains(b.String(), "additive") {
+		t.Errorf("pass summary:\n%s", b.String())
 	}
-	if strings.Contains(b.String(), "|---|") {
-		t.Errorf("expected no table when there is nothing to show:\n%s", b.String())
+
+	review := Build([]Unit{{Path: "u", Changes: []policy.Change{change("x", policy.Review, "someone look")}}})
+	b.Reset()
+	if err := review.WriteMarkdown(&b); err != nil {
+		t.Fatalf("WriteMarkdown: %v", err)
+	}
+	if !strings.Contains(b.String(), "Review required") || !strings.Contains(b.String(), "someone look") {
+		t.Errorf("review summary:\n%s", b.String())
 	}
 }
 
-// A pipe in a message must not split the Markdown table into extra columns.
+// Zero units must not read as approval.
+func TestWriteMarkdownWithNoUnits(t *testing.T) {
+	var b strings.Builder
+	if err := Build(nil).WriteMarkdown(&b); err != nil {
+		t.Fatalf("WriteMarkdown: %v", err)
+	}
+	if !strings.Contains(b.String(), "nothing here has been checked") {
+		t.Errorf("summary:\n%s", b.String())
+	}
+}
+
 func TestWriteMarkdownEscapesPipes(t *testing.T) {
-	rep := Build([]Unit{{
-		Path:     "u",
-		Findings: []policy.Finding{{Resource: "r", Score: 1, Msg: "a | b"}},
-	}}, 50)
+	rep := Build([]Unit{{Path: "u", Changes: []policy.Change{change("x", policy.Pass, "a | b")}}})
 
 	var b strings.Builder
 	if err := rep.WriteMarkdown(&b); err != nil {
 		t.Fatalf("WriteMarkdown: %v", err)
 	}
-
 	if !strings.Contains(b.String(), `a \| b`) {
 		t.Errorf("pipe was not escaped:\n%s", b.String())
 	}

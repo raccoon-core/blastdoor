@@ -143,3 +143,22 @@ func TestFindUnitsSkipsTerragruntCache(t *testing.T) {
 		t.Errorf("got %d units (%v), want 3", len(units), units)
 	}
 }
+
+// A .tfvars edit changes what gets applied without touching any .tf, so it
+// has to pull its unit into the plan.
+func TestChangedPicksUpVariableFiles(t *testing.T) {
+	for _, name := range []string{"terraform.tfvars", "prod.auto.tfvars.json", "main.tf.json"} {
+		t.Run(name, func(t *testing.T) {
+			dir := repo(t)
+			commit(t, dir, "terraform/kafka/stg/"+name, "{}\n")
+
+			got, err := Changed(Options{Root: "terraform", BaseRef: "HEAD~1", HeadRef: "HEAD", RepoDir: dir})
+			if err != nil {
+				t.Fatalf("Changed: %v", err)
+			}
+			if len(got) != 1 || got[0] != "terraform/kafka/stg" {
+				t.Errorf("got %v, want [terraform/kafka/stg]", got)
+			}
+		})
+	}
+}

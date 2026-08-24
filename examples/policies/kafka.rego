@@ -1,46 +1,43 @@
-# A worked example: scoring Kafka topic, ACL and user changes.
+# A worked example: judging Kafka topic, ACL and user changes.
 #
-# Read this alongside examples/README.md. The pattern is the same for any
-# provider — match a resource change, emit a score, and claim the address in
-# `classified` so the built-in backstop stops scoring it at 100.
+# Every rule answers one question about one change — is this fine, does a
+# person need to look, or is it not allowed? Add the change to `allow`,
+# `review` or `deny` with a reason. A change no rule matches is denied, so
+# there is nothing extra to write to make that happen.
 package blastdoor
 
 # --- topics ---------------------------------------------------------------
 
-# Creating a topic is additive and cheap to undo.
-deny contains {"msg": msg, "score": 0, "resource": rc.address} if {
+# Creating a topic is additive and easy to undo.
+allow contains {"resource": rc.address, "reason": sprintf("creating topic %s", [rc.change.after.name])} if {
 	some rc in input.resource_changes
 	rc.type == "kafka_topic"
 	rc.change.actions == ["create"]
-	msg := sprintf("%s: creating topic %s", [rc.address, rc.change.after.name])
 }
 
-# Deleting a topic destroys its data, whether outright or as the delete half
-# of a replace.
-deny contains {"msg": msg, "score": 80, "resource": rc.address} if {
+# Deleting a topic destroys its data. Recoverable, but somebody should say so
+# on purpose — whether outright or as the delete half of a replace.
+review contains {"resource": rc.address, "reason": "deleting a topic destroys its data"} if {
 	some rc in input.resource_changes
 	rc.type == "kafka_topic"
 	destroys(rc)
-	msg := sprintf("%s: deleting a topic destroys its data", [rc.address])
 }
 
-# Shrinking a topic loses partitions or redundancy.
-deny contains {"msg": msg, "score": 90, "resource": rc.address} if {
+# Shrinking a topic is not a thing Kafka can do to a live topic, and asking
+# for it loses partitions or redundancy. No approval makes that work.
+deny contains {"resource": rc.address, "reason": "reducing partitions or replication_factor is not a supported operation"} if {
 	some rc in input.resource_changes
 	rc.type == "kafka_topic"
 	rc.change.actions == ["update"]
 	shrinks(rc)
-	msg := sprintf("%s: reducing partitions or replication_factor", [rc.address])
 }
 
-# Any other in-place edit is a config tweak: retention, cleanup policy, and
-# the like.
-deny contains {"msg": msg, "score": 10, "resource": rc.address} if {
+# Any other in-place edit is a config tweak: retention, cleanup policy.
+allow contains {"resource": rc.address, "reason": "topic configuration change"} if {
 	some rc in input.resource_changes
 	rc.type == "kafka_topic"
 	rc.change.actions == ["update"]
 	not shrinks(rc)
-	msg := sprintf("%s: topic configuration change", [rc.address])
 }
 
 shrinks(rc) if {
@@ -53,33 +50,31 @@ shrinks(rc) if {
 
 # --- ACLs -----------------------------------------------------------------
 
-# A wildcard Allow grant hands out far more than it looks like it does.
-deny contains {"msg": msg, "score": 90, "resource": rc.address} if {
+# A wildcard Allow grant hands out far more than it appears to, and there is
+# no version of it this policy is willing to accept.
+deny contains {"resource": rc.address, "reason": "Allow ACL with a wildcard principal or resource grants unbounded access"} if {
 	some rc in input.resource_changes
 	rc.type == "kafka_acl"
 	rc.change.actions == ["create"]
 	rc.change.after.acl_permission_type == "Allow"
 	wildcard(rc)
-	msg := sprintf("%s: Allow ACL with a wildcard principal or resource", [rc.address])
 }
 
-# A scoped Allow grant still widens access, but only where it says.
-deny contains {"msg": msg, "score": 20, "resource": rc.address} if {
+# A scoped Allow grant still widens access, so a person signs it off.
+review contains {"resource": rc.address, "reason": sprintf("grants %s access to %s", [rc.change.after.acl_principal, rc.change.after.resource_name])} if {
 	some rc in input.resource_changes
 	rc.type == "kafka_acl"
 	rc.change.actions == ["create"]
 	rc.change.after.acl_permission_type == "Allow"
 	not wildcard(rc)
-	msg := sprintf("%s: scoped Allow ACL for %s", [rc.address, rc.change.after.acl_principal])
 }
 
 # A Deny ACL only ever narrows access.
-deny contains {"msg": msg, "score": 0, "resource": rc.address} if {
+allow contains {"resource": rc.address, "reason": "Deny ACL only restricts access"} if {
 	some rc in input.resource_changes
 	rc.type == "kafka_acl"
 	rc.change.actions == ["create"]
 	rc.change.after.acl_permission_type == "Deny"
-	msg := sprintf("%s: Deny ACL", [rc.address])
 }
 
 wildcard(rc) if {
@@ -92,44 +87,21 @@ wildcard(rc) if {
 
 # --- users ----------------------------------------------------------------
 
-deny contains {"msg": msg, "score": 10, "resource": rc.address} if {
+allow contains {"resource": rc.address, "reason": "creating a user"} if {
 	some rc in input.resource_changes
 	rc.type == "kafka_user_scram_credential"
 	rc.change.actions == ["create"]
-	msg := sprintf("%s: creating a user", [rc.address])
 }
 
-deny contains {"msg": msg, "score": 60, "resource": rc.address} if {
+review contains {"resource": rc.address, "reason": "deleting a user breaks whatever authenticates as it"} if {
 	some rc in input.resource_changes
 	rc.type == "kafka_user_scram_credential"
 	destroys(rc)
-	msg := sprintf("%s: deleting a user breaks whatever authenticates as it", [rc.address])
 }
 
-# --- shared helpers -------------------------------------------------------
+# --- shared ---------------------------------------------------------------
 
 destroys(rc) if {
 	some action in rc.change.actions
 	action == "delete"
-}
-
-# Claim every change these rules understand. Anything not claimed here is
-# scored 100 by blastdoor's built-in backstop — including a Kafka change in a
-# shape none of the rules above match, such as a replace.
-classified contains rc.address if {
-	some rc in input.resource_changes
-	rc.type in {"kafka_topic", "kafka_acl", "kafka_user_scram_credential"}
-	scored_shape(rc)
-}
-
-scored_shape(rc) if {
-	rc.change.actions == ["create"]
-}
-
-scored_shape(rc) if {
-	rc.change.actions == ["update"]
-}
-
-scored_shape(rc) if {
-	rc.change.actions == ["delete"]
 }

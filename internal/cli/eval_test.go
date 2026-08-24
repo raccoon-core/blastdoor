@@ -61,3 +61,28 @@ func TestParseGroupIDs(t *testing.T) {
 		t.Error("expected an error for a non-numeric group id")
 	}
 }
+
+func TestTrippedGuardsMatching(t *testing.T) {
+	tests := []struct {
+		name    string
+		changed string
+		guard   string
+		want    bool
+	}{
+		{"file inside a guarded directory", "policy/rules.rego", "policy", true},
+		{"nested inside a guarded directory", "policy/aws/s3.rego", "policy", true},
+		{"the guarded file itself", ".gitlab-ci.yml", ".gitlab-ci.yml", true},
+		{"unrelated file", "terraform/main.tf", "policy", false},
+		// "policyholder" starts with "policy" but is a different directory.
+		{"directory with a shared prefix", "policyholder/x.rego", "policy", false},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			got := matchesGuard(tc.changed, []string{tc.guard})
+			if got != tc.want {
+				t.Errorf("matchesGuard(%q, %q) = %v, want %v", tc.changed, tc.guard, got, tc.want)
+			}
+		})
+	}
+}
