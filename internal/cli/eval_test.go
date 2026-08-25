@@ -75,6 +75,17 @@ func TestTrippedGuardsMatching(t *testing.T) {
 		{"unrelated file", "terraform/main.tf", "policy", false},
 		// "policyholder" starts with "policy" but is a different directory.
 		{"directory with a shared prefix", "policyholder/x.rego", "policy", false},
+
+		// Pattern forms, for ignore lists that cannot be written out by hand.
+		{"same name in any directory", "terraform/kafka/README.md", "**/README.md", true},
+		{"that name at the top level too", "README.md", "**/README.md", true},
+		{"a different name", "terraform/kafka/CHANGELOG.md", "**/README.md", false},
+		{"glob under **", "terraform/kafka/notes.md", "**/*.md", true},
+		{"glob on the whole path", "docs/index.md", "docs/*.md", true},
+		// path.Match's * does not cross a separator, so this stays a miss.
+		{"glob does not cross directories", "docs/api/index.md", "docs/*.md", false},
+		// A pattern is not a prefix: naming a glob does not sweep in a tree.
+		{"literal path is still a prefix", "policy/aws/s3.rego", "policy", true},
 	}
 
 	for _, tc := range tests {

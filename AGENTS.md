@@ -91,6 +91,14 @@ This asymmetry is intentional. Do not "simplify" them into one path.
 - `--policy` paths that contain no `.rego` are an error. Compiling an empty
   rule set would deny every change for want of a rule, which reads as a verdict
   on the plan rather than as the mistyped path it is.
+- `--require-coverage` forces review for changed files that select no unit
+  (`detect.Uncovered`). `affectsPlan` only accepts `.hcl`, `.tf` and `.tfvars`,
+  so everything else — a `topics.yaml` a unit reads, a `.terragrunt-version`
+  deciding the binary that applies every unit below it, a deleted unit — is
+  planned by nothing and judged by nothing. `detect.Uncovered` deliberately
+  reports files outside `--root` too: which paths may go unplanned is a fact
+  about one repository's layout, so it belongs in that repository's
+  `--ignore-path` list where it is visible, not in a silent rule here.
 - A 401/403 from GitLab is fatal. A token that cannot reach the API must not be
   mistaken for a change that needs no gate.
 - `gitlabapi.Unapprove` tolerates 404 and 401 (nothing to withdraw) but **not**

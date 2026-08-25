@@ -122,8 +122,16 @@ auto_merge: false               # bool
 squash: true                    # bool
 ```
 
-Unknown keys are an error, not a warning. A misspelled `ingore:` that is
-quietly ignored produces a pipeline that looks configured and is not.
+**An unhandled key rejects the whole file, and the command fails.** Not a
+warning, not that key skipped, and above all not "carry on without the config":
+a run with no config is a run with no guards and no ignore list, which is the
+most dangerous way to respond to a file blastdoor did not fully understand. A
+misspelled `ingore:` must stop the pipeline, not produce one that looks
+configured and is not.
+
+This also covers a config written for a newer blastdoor than the image running
+it. The older binary does not know the key, cannot honour what it asks for, and
+says so rather than judging the change by rules it only partly read.
 
 ### Deliberately not in the file
 
@@ -136,47 +144,60 @@ quietly ignored produces a pipeline that looks configured and is not.
 
 ## Precedence
 
-Flags win — with one exception, which is the point of the whole mechanism.
+One rule for every setting, with no exceptions:
 
-Settings split into two classes.
+**the flag if it was given, otherwise the config, otherwise the default.**
 
-**Restrictions accumulate. Neither source can weaken the other.**
+The config is the repository's baseline — global, in the sense that it
+describes the repository once. The pipeline is local to the run, and what it
+states replaces the baseline rather than adding to it.
 
-| Setting | Rule |
+| Setting | Resolved from |
 |---|---|
-| `guard` | union of the config list and the `--guard-path` flags |
-| `require_coverage` | on if either the config or the flag turns it on |
+| `root`, `tool`, `manager`, `terragrunt_tf_path` | `--root`, `--tool`, `--manager`, `--terragrunt-tf-path` |
+| `policy` | the `--policy` list, if any was given |
+| `guard` | the `--guard-path` list, if any was given |
+| `ignore` | the `--ignore-path` list, if any was given |
+| `require_coverage` | `--require-coverage` |
+| `approver_group_ids`, `rule_name`, `auto_merge`, `squash` | the matching gate flags |
 
-A guard is a restriction. If a flag list replaced the config list, a pipeline
-that passes `--guard-path .gitlab-ci.yml` would silently drop the config's
-guard on `policy/`, and the config could not be trusted to mean anything. The
-same reasoning applies in reverse, so the answer is a union: both sources may
-add, neither may remove.
+A list is replaced whole, never merged. Half a guard list from the pipeline and
+half from the repository would leave nobody able to say what is guarded.
 
-**Everything else: the flag wins when it was actually given.**
+"Given" means `cmd.Flags().Changed(name)`, not "differs from the default". A
+flag left alone must not out-rank the config just because its default is
+non-empty — `--root` defaults to `.`, and that default silently beating a
+config that says `terraform` would make the file useless.
 
-| Setting | Rule |
-|---|---|
-| `root`, `tool`, `manager`, `terragrunt_tf_path` | flag if set, else config, else default |
-| `policy` | flag list if any `--policy` was given, else config |
-| `ignore` | flag list if any `--ignore-path` was given, else config |
-| `approver_group_ids`, `rule_name`, `auto_merge`, `squash` | flag if set, else config, else default |
+### What this costs, and what pays for it
 
-"Actually given" means `cmd.Flags().Changed(name)`, not "differs from the
-default". A flag left alone must not out-rank the config just because its
-default is non-empty — `--root` defaults to `.`, and that default silently
-beating a config that says `terraform` would make the file useless.
+Override means the repository's own file can state a **shorter** guard list
+than the pipeline would have. That is not a hole in practice, for two reasons
+that must both hold:
 
-`ignore` relaxes rather than restricts, which is why it is override and not
-union: a pipeline that states an ignore list gets exactly that list, and a
-branch cannot widen it by adding entries to the config.
+1. The pipeline always passes `--guard-path`, and flags win. A config's
+   `guard:` is only ever consulted when the pipeline states none — which the
+   template never does.
+2. The config self-guards. Editing `.blastdoor.yml` to shorten its own guard
+   list forces a review of that very edit.
+
+The consequence for anyone wiring blastdoor up by hand is blunt, and belongs
+next to the existing warning in [hardening.md](../../hardening.md): **a
+pipeline that passes no `--guard-path` hands the guard list to the branch.**
+The template's list is not a convenience, it is the control.
 
 ## Self-guarding, and the floor beneath it
 
 **When a config file is loaded, its path is added to the guard paths, always.**
-Not by the template — by the tool, and not optionally. Without it the config is
-itself the bypass: a merge request edits `.blastdoor.yml` to ignore the tree it
-is changing, and nothing forces anyone to look at it.
+Not by the template — by the tool, and not optionally.
+
+This is the one thing that is *not* subject to the precedence rule above. It is
+not a setting either source states, so neither can replace it: the path is
+appended to whatever guard list won. Without it the config is itself the
+bypass — a merge request edits `.blastdoor.yml` to ignore the tree it is
+changing, and nothing forces anyone to look at it. Since guards are otherwise
+an override, this is the only guarantee that survives a config which names no
+guards at all.
 
 Self-guarding catches an **edit**. It cannot catch a **deletion**: a config
 that is gone cannot ask to be guarded, and blastdoor then loads no config and
@@ -191,7 +212,8 @@ BLASTDOOR_GUARD_PATHS: ".blastdoor.yml $BLASTDOOR_POLICY_DIR .gitlab-ci.yml"
 
 `--guard-path` matches a path that changed, and a deletion is a change, so a
 merge request that removes `.blastdoor.yml` trips the guard from the pipeline
-side. Since guards are a union, this floor cannot be weakened by the config.
+side. The floor holds because flags beat the config: a repository cannot shorten
+a list the pipeline states.
 
 ## Per-command behaviour
 
@@ -209,8 +231,12 @@ precedence is applied.
 
 ## Errors
 
+Every one of these rejects the file and fails the command. None of them falls
+back to defaults and continues, because continuing means running with no guards.
+
 - Unparseable YAML: fail, naming the file and the line.
-- Unknown key: fail, naming the key.
+- Unknown key: fail, naming the key. The file is rejected as a whole, not
+  loaded minus the offending key.
 - Wrong type (`ignore: "ansible roles"` instead of a list): fail, saying which
   key and what was expected. This is the exact mistake the string-splitting
   variables invite, so it must be caught loudly rather than coerced.
@@ -236,14 +262,17 @@ with them. The variables it stops setting are the ones the config now carries.
 Real files in `t.TempDir()`, matching how the repository already tests.
 
 - Each key loads and reaches the command that consumes it.
-- Precedence, per class: a flag beats the config for `root` and `ignore`; a
-  flag and a config **combine** for `guard`; `require_coverage` turns on from
-  either side alone.
+- Precedence, one rule, checked per setting: a flag beats the config for
+  `root`, `policy`, `guard`, `ignore` and `require_coverage`.
+- A guard list is **replaced**, not merged: a config naming two guards and a
+  flag naming one leaves exactly the one.
 - A flag left at its default does not beat the config.
-- The config path is guarded whenever a config is loaded.
+- The config path is guarded whenever a config is loaded — including when the
+  config names no guards, and when a `--guard-path` flag replaced its list.
 - A deleted `.blastdoor.yml` still trips the template's floor guard.
 - Unknown key, wrong type, unparseable YAML and a missing `--config` each fail
-  with a message naming the cause.
+  with a message naming the cause, and none of them falls back to running
+  unconfigured.
 - No config file: every command behaves exactly as it does now.
 - A `**/README.md` pattern in the config survives to the matcher intact — the
   regression this file exists to prevent.
@@ -253,7 +282,13 @@ Real files in `t.TempDir()`, matching how the repository already tests.
 The `for` loops and `set -f` in the templates go away, and with them the class
 of bug where the shell rewrites a pattern before blastdoor sees it.
 
-A second place exists where a guard list can come from. That ambiguity is the
-accepted cost of not breaking existing pipelines; the union rule makes it safe
-in the direction that matters, since neither source can remove a restriction
-the other added.
+A second place exists where a guard list can come from, and the two do not
+combine — the pipeline's list simply wins. That is the accepted cost of one
+precedence rule a person can hold in their head, and of not breaking existing
+pipelines. What keeps it safe is that the template always states its list, and
+that the config always guards itself.
+
+The corollary is worth repeating because it is the only sharp edge here: **a
+pipeline that passes no `--guard-path` lets the repository decide what is
+guarded.** That belongs in hardening.md alongside the existing note that a
+pipeline which drops the blastdoor jobs entirely has no gate at all.

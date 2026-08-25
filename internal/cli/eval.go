@@ -7,6 +7,7 @@ import (
 	"io"
 	"io/fs"
 	"os"
+	"path"
 	"path/filepath"
 	"sort"
 	"strings"
@@ -27,6 +28,10 @@ func newEvalCmd() *cobra.Command {
 		guardPaths  []string
 		baseRef     string
 		headRef     string
+
+		requireCoverage bool
+		ignorePaths     []string
+		root            string
 	)
 
 	cmd := &cobra.Command{
@@ -46,6 +51,17 @@ files, so shared policies and a repository's own can be passed together:
 Only .rego files are read. Fixtures and test plans can sit in the same tree
 without becoming part of the evaluation. A --policy path holding no .rego at
 all is an error, not an empty rule set.
+
+--require-coverage judges what the plans do not cover. A file that selects no
+unit — a topics.yaml a unit reads, a .terragrunt-version deciding the binary
+that applies it — is planned by nothing and so scored by nothing. Rather than
+letting it through unseen, it forces a review:
+
+  blastdoor eval --plan-dir .blastdoor --policy policy \
+    --require-coverage --ignore-path docs --ignore-path README.md
+
+Name the paths allowed to go unplanned with --ignore-path. Guarded paths are
+already exempt: they force review on their own.
 
 Point --plan at a single file while writing policies:
 
@@ -105,6 +121,17 @@ or --plan-dir at the tree 'blastdoor plan' produced, to judge a whole change.`,
 				rep.RequireReview(tripped)
 			}
 
+			// A file no unit selects is planned by nothing and judged by
+			// nothing. Guarded and ignored paths are already accounted for,
+			// so they are not reported twice.
+			if requireCoverage {
+				missing, err := uncoveredFiles(root, baseRef, headRef, append(ignorePaths, guardPaths...))
+				if err != nil {
+					return err
+				}
+				rep.RequireCoverage(missing)
+			}
+
 			if err := writeReport(rep, outDir); err != nil {
 				return err
 			}
@@ -115,6 +142,9 @@ or --plan-dir at the tree 'blastdoor plan' produced, to judge a whole change.`,
 			if failOnBlock && rep.Verdict != policy.Pass {
 				if len(rep.Guarded) > 0 {
 					return fmt.Errorf("%s: this change edits guarded paths (%s)", rep.Verdict, strings.Join(rep.Guarded, ", "))
+				}
+				if len(rep.Uncovered) > 0 {
+					return fmt.Errorf("%s: this change edits files no plan covers (%s)", rep.Verdict, strings.Join(rep.Uncovered, ", "))
 				}
 				return fmt.Errorf("verdict is %s", rep.Verdict)
 			}
@@ -130,6 +160,9 @@ or --plan-dir at the tree 'blastdoor plan' produced, to judge a whole change.`,
 	cmd.Flags().StringArrayVar(&guardPaths, "guard-path", nil, "path whose modification forces review whatever the score (repeatable)")
 	cmd.Flags().StringVar(&baseRef, "base-ref", "", "git ref to diff from for --guard-path (default: auto)")
 	cmd.Flags().StringVar(&headRef, "head-ref", "HEAD", "git ref to diff to for --guard-path")
+	cmd.Flags().BoolVar(&requireCoverage, "require-coverage", false, "force review when the change edits files no unit selects")
+	cmd.Flags().StringArrayVar(&ignorePaths, "ignore-path", nil, "path --require-coverage may leave unplanned (repeatable)")
+	cmd.Flags().StringVar(&root, "root", ".", "directory to scan for units when checking coverage")
 
 	return cmd
 }
@@ -225,12 +258,64 @@ func trippedGuards(guardPaths []string, baseRef, headRef string) ([]string, erro
 	return tripped, nil
 }
 
-// matchesGuard reports whether a changed file is the guarded path itself or
-// sits underneath it.
+// uncoveredFiles lists the changed files that select no unit, less the ones
+// the caller has accounted for.
+//
+// Guarded paths are passed in as exempt: they already force review, and
+// naming the same file twice in one summary tells a reader nothing extra.
+func uncoveredFiles(root, baseRef, headRef string, exempt []string) ([]string, error) {
+	missing, err := detect.Uncovered(detect.Options{Root: root, BaseRef: baseRef, HeadRef: headRef})
+	if err != nil {
+		return nil, fmt.Errorf("--require-coverage needs a diff: %w", err)
+	}
+
+	var out []string
+	for _, file := range missing {
+		if matchesGuard(file, exempt) {
+			continue
+		}
+		out = append(out, file)
+	}
+	return out, nil
+}
+
+// matchesGuard reports whether a changed file is one of the given paths, sits
+// underneath one, or matches one as a pattern.
+//
+// Three forms, in the order they are tried:
+//
+//	policy            the path itself and everything under it
+//	*.md              a glob, matched against the whole path
+//	**/README.md      the same name in any directory
+//
+// A plain path stays a prefix, because that is what a guard needs: naming a
+// directory has to cover what is inside it. The pattern forms exist for the
+// ignore list, where the interesting sets are shaped like "every README in the
+// repository" — a repository with one README per component cannot list them
+// one by one and keep the list honest.
 func matchesGuard(file string, guardPaths []string) bool {
 	f := filepath.ToSlash(filepath.Clean(file))
 	for _, guard := range guardPaths {
 		g := filepath.ToSlash(filepath.Clean(guard))
+
+		if rest, ok := strings.CutPrefix(g, "**/"); ok {
+			if f == rest || strings.HasSuffix(f, "/"+rest) {
+				return true
+			}
+			// A ** pattern can still hold a glob: **/*.md.
+			if ok, _ := path.Match(rest, path.Base(f)); ok {
+				return true
+			}
+			continue
+		}
+
+		if strings.ContainsAny(g, "*?[") {
+			if ok, _ := path.Match(g, f); ok {
+				return true
+			}
+			continue
+		}
+
 		// The trailing slash keeps "policy" from matching "policyholder".
 		if f == g || strings.HasPrefix(f, g+"/") {
 			return true

@@ -29,6 +29,8 @@ type Report struct {
 	Counts map[policy.Verdict]int `json:"counts"`
 	// Guarded lists changed paths that force review on their own.
 	Guarded []string `json:"guarded,omitempty"`
+	// Uncovered lists changed files that no plan accounts for.
+	Uncovered []string `json:"uncovered,omitempty"`
 }
 
 // Build folds the units into one verdict: the worst one anywhere.
@@ -74,6 +76,34 @@ func (r *Report) RequireReview(paths []string) {
 	r.Verdict = policy.Worse(r.Verdict, policy.Review)
 }
 
+// RequireCoverage forces at least review, recording the changed files that no
+// plan accounts for.
+//
+// A file nothing plans is a file no policy judges. Left alone it is not a
+// lenient verdict but the absence of one: the change is applied by whatever
+// runs next, having been read by nobody. Sending it to a person is the only
+// honest answer, because blastdoor genuinely does not know what it does.
+//
+// Like RequireReview, it never softens a denial.
+func (r *Report) RequireCoverage(paths []string) {
+	if len(paths) == 0 {
+		return
+	}
+	seen := map[string]bool{}
+	for _, p := range r.Uncovered {
+		seen[p] = true
+	}
+	for _, p := range paths {
+		if seen[p] {
+			continue
+		}
+		seen[p] = true
+		r.Uncovered = append(r.Uncovered, p)
+	}
+	sort.Strings(r.Uncovered)
+	r.Verdict = policy.Worse(r.Verdict, policy.Review)
+}
+
 // WriteJSON writes the machine-readable report.
 func (r Report) WriteJSON(w io.Writer) error {
 	enc := json.NewEncoder(w)
@@ -100,6 +130,13 @@ func (r Report) WriteMarkdown(w io.Writer) error {
 	if len(r.Guarded) > 0 {
 		b.WriteString("\nThis change also edits the rules that judge it, so a person has to look regardless:\n\n")
 		for _, p := range r.Guarded {
+			b.WriteString(fmt.Sprintf("- `%s`\n", escapePipes(p)))
+		}
+	}
+
+	if len(r.Uncovered) > 0 {
+		b.WriteString("\nThis change edits files that no plan covers, so what they do has not been judged:\n\n")
+		for _, p := range r.Uncovered {
 			b.WriteString(fmt.Sprintf("- `%s`\n", escapePipes(p)))
 		}
 	}
@@ -153,6 +190,14 @@ func (r Report) headline() string {
 		}
 		return line + " Approving does not clear this.\n"
 	case policy.Review:
+		// A review can be forced by paths rather than by scored changes —
+		// a guarded file, or one no plan covers. Counting changes then
+		// reports "0 change(s) need a person to approve", which reads like
+		// there is nothing to look at, directly above the list of what to
+		// look at.
+		if review == 0 && pass == 0 && deny == 0 {
+			return "**Review required** — a person has to look at this change. Nothing in it was scored.\n"
+		}
 		return fmt.Sprintf("**Review required** — %d change(s) need a person to approve, %d passed.\n", review, pass)
 	default:
 		return fmt.Sprintf("**Pass** — every one of the %d change(s) is allowed by policy.\n", pass)

@@ -35,6 +35,11 @@ variables:
   # the verdict. Without this, a change can rewrite the policies that judge it,
   # or the pipeline that runs them, in the same commit.
   BLASTDOOR_GUARD_PATHS: "$BLASTDOOR_POLICY_DIR .gitlab-ci.yml"
+  # Paths allowed to change without any unit planning them. Everything else a
+  # merge request touches that selects no unit forces a review: a file no plan
+  # covers is a file no policy has read. Docs and runbooks belong here; a
+  # values file a unit reads does not.
+  BLASTDOOR_IGNORE_PATHS: ""
 
 .blastdoor:rules:
   # Run on merge request pipelines, and on branch pipelines that no merge
@@ -76,13 +81,23 @@ blastdoor:eval:
     - !reference [".blastdoor:rules", default]
   script:
     - |
+      # Word-split the lists without letting the shell expand them: a pattern
+      # like **/README.md is for blastdoor to interpret, and the shell would
+      # otherwise rewrite it into whatever paths happen to exist here.
+      set -f
       guards=""
       for p in $BLASTDOOR_GUARD_PATHS; do guards="$guards --guard-path $p"; done
+      ignores=""
+      for p in $BLASTDOOR_IGNORE_PATHS; do ignores="$ignores --ignore-path $p"; done
+      # Still unset when eval runs: $ignores is unquoted there too, and this
+      # is the last command, so its exit status is the job's.
       blastdoor eval \
         --plan-dir "$BLASTDOOR_DIR" \
         --policy "$BLASTDOOR_POLICY_DIR" \
         --out-dir "$BLASTDOOR_DIR" \
-        $guards
+        --root "$BLASTDOOR_ROOT" \
+        --require-coverage \
+        $guards $ignores
   artifacts:
     reports:
       dotenv: $BLASTDOOR_DIR/blastdoor.env
