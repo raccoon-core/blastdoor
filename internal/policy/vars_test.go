@@ -11,8 +11,8 @@ const limitPolicy = `package blastdoor
 
 default max_partitions := 10
 
-max_partitions := data.vars.max_partitions if {
-	data.vars.max_partitions
+max_partitions := data.variables.max_partitions if {
+	data.variables.max_partitions
 }
 
 allow contains {"resource": rc.address, "reason": sprintf("limit is %v", [max_partitions])} if {
@@ -118,7 +118,7 @@ func TestVarsSurviveRepeatedEvaluation(t *testing.T) {
 }
 
 // Variables must not be able to land on the namespace the rules live in.
-// data.vars is a fixed root chosen so that it cannot be data.blastdoor.
+// data.variables is a fixed root chosen so that it cannot be data.blastdoor.
 func TestVarsCannotShadowRules(t *testing.T) {
 	e, err := New(context.Background(), Options{
 		PolicyPaths: []string{writePolicy(t, limitPolicy)},

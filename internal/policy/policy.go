@@ -145,13 +145,13 @@ type Options struct {
 	// PolicyPaths are directories or .rego files to load.
 	PolicyPaths []string
 	// Vars are values a repository sets for the policies to read, reachable
-	// as data.vars. They let a shared rule carry a default that a repository
+	// as data.variables. They let a shared rule carry a default that a repository
 	// can move:
 	//
 	//	default max_partitions := 10
-	//	max_partitions := data.vars.max_partitions if { data.vars.max_partitions }
+	//	max_partitions := data.variables.max_partitions if { data.variables.max_partitions }
 	//
-	// Mounted at data.vars, never at the root, so a variable cannot land on
+	// Mounted at data.variables, never at the root, so a variable cannot land on
 	// data.blastdoor and displace the rule sets themselves. That is the
 	// difference between this and letting the loader read .json and .yaml
 	// out of a policy directory, which it deliberately does not.
@@ -159,7 +159,7 @@ type Options struct {
 }
 
 // VarsRoot is where Vars are mounted. Anything but "blastdoor".
-const VarsRoot = "vars"
+const VarsRoot = "variables"
 
 // Evaluator holds a compiled set of policies, ready to judge many plans.
 type Evaluator struct {

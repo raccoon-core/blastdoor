@@ -41,7 +41,7 @@ allow contains {"resource": rc.address, "reason": "fine"} if {
 // guarded implicitly, and a guard is a statement about a merge request — with
 // no diff there is no merge request, nothing to gate, and nothing to guard.
 func TestSelfGuardAloneDoesNotRequireADiff(t *testing.T) {
-	t.Chdir(authoringDir(t, "policy:\n  - policy\nvars:\n  max_partitions: 32\n"))
+	t.Chdir(authoringDir(t, "policy:\n  - policy\nvariables:\n  max_partitions: 32\n"))
 	configPath = ""
 	prev := loaded
 	t.Cleanup(func() { loaded = prev })

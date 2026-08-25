@@ -98,7 +98,7 @@ This asymmetry is intentional. Do not "simplify" them into one path.
   merged — one file per unit merges, one file per run collides. It cannot come
   from the plan JSON, which says `terraform_version` whichever tool wrote it.
   A missing `engine.txt` is silence, not an error.
-- Policy variables (`vars:`) are mounted at `data.vars` via `rego.Store`, never
+- Policy variables (`variables:`) are mounted at `data.variables` via `rego.Store`, never
   merged into the data root. A variable that could reach `data.blastdoor` would
   displace the rule sets, which is the same hole `keepRego` closes from the
   other side. Loading policies is a store write, so it needs its own
