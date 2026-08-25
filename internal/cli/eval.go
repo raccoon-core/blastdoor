@@ -38,6 +38,15 @@ summary.md and blastdoor.env into --out-dir.
 Each change comes back pass, review or deny, and the worst one decides the
 plan. A change no policy matches is denied.
 
+--policy is repeatable, and each one is searched all the way down for .rego
+files, so shared policies and a repository's own can be passed together:
+
+  blastdoor eval --plan-dir .blastdoor --policy common --policy policy
+
+Only .rego files are read. Fixtures and test plans can sit in the same tree
+without becoming part of the evaluation. A --policy path holding no .rego at
+all is an error, not an empty rule set.
+
 Point --plan at a single file while writing policies:
 
   blastdoor eval --plan examples/plans/kafka-topic-create.json --policy examples/policies
@@ -115,7 +124,7 @@ or --plan-dir at the tree 'blastdoor plan' produced, to judge a whole change.`,
 
 	cmd.Flags().StringArrayVar(&planFiles, "plan", nil, "plan JSON file to score (repeatable)")
 	cmd.Flags().StringVar(&planDir, "plan-dir", "", "directory tree of plan.json files, as written by 'blastdoor plan'")
-	cmd.Flags().StringArrayVar(&policyPaths, "policy", nil, "policy directory or .rego file (repeatable)")
+	cmd.Flags().StringArrayVar(&policyPaths, "policy", nil, "directory to search for .rego policies, or a single .rego file (repeatable)")
 	cmd.Flags().StringVar(&outDir, "out-dir", ".blastdoor", "directory to write report.json, summary.md and blastdoor.env into")
 	cmd.Flags().BoolVar(&failOnBlock, "fail-on-block", false, "exit non-zero unless every change passes")
 	cmd.Flags().StringArrayVar(&guardPaths, "guard-path", nil, "path whose modification forces review whatever the score (repeatable)")

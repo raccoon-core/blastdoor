@@ -11,7 +11,11 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io/fs"
+	"os"
+	"path/filepath"
 	"sort"
+	"strings"
 
 	"github.com/open-policy-agent/opa/v1/rego"
 )
@@ -145,14 +149,77 @@ type Evaluator struct {
 	queries map[Verdict]rego.PreparedEvalQuery
 }
 
+// keepRego tells the loader to walk into every directory and take the .rego
+// files it finds there, and nothing else.
+//
+// Left to itself the loader also reads .json and .yaml under a policy path as
+// data documents. A policy repository carries fixtures, test plans and its own
+// configuration, so that turns files nobody thinks of as policy into inputs:
+// one malformed fixture fails the whole evaluation, and a data.json landing on
+// data.blastdoor collides with the rule sets themselves — a way to disable
+// policies with a file that never looks like one. Policies are Rego. Nothing
+// else in the tree is ours to load.
+//
+// The loader excludes what the filter returns true for.
+func keepRego(_ string, info fs.FileInfo, _ int) bool {
+	if info.IsDir() {
+		return false
+	}
+	return filepath.Ext(info.Name()) != ".rego"
+}
+
+// countRego reports how many .rego files the given paths hold, walking
+// directories the way the loader does.
+func countRego(paths []string) (int, error) {
+	n := 0
+	for _, p := range paths {
+		info, err := os.Stat(p)
+		if err != nil {
+			return 0, fmt.Errorf("reading policy path: %w", err)
+		}
+		if !info.IsDir() {
+			if filepath.Ext(info.Name()) == ".rego" {
+				n++
+			}
+			continue
+		}
+		err = filepath.WalkDir(p, func(_ string, d fs.DirEntry, err error) error {
+			if err != nil {
+				return err
+			}
+			if !d.IsDir() && filepath.Ext(d.Name()) == ".rego" {
+				n++
+			}
+			return nil
+		})
+		if err != nil {
+			return 0, fmt.Errorf("scanning %s for policies: %w", p, err)
+		}
+	}
+	return n, nil
+}
+
 // New compiles the policies described by opts.
 func New(ctx context.Context, opts Options) (*Evaluator, error) {
 	e := &Evaluator{queries: map[Verdict]rego.PreparedEvalQuery{}}
 
+	// Policy paths that hold no policies are a mistake — a mistyped path, a
+	// subdirectory that moved. Saying so beats letting it surface as every
+	// change denied for want of a rule, which reads like a verdict.
+	if len(opts.PolicyPaths) > 0 {
+		found, err := countRego(opts.PolicyPaths)
+		if err != nil {
+			return nil, err
+		}
+		if found == 0 {
+			return nil, fmt.Errorf("no .rego files found under %s", strings.Join(opts.PolicyPaths, ", "))
+		}
+	}
+
 	for verdict, query := range Queries {
 		args := []func(*rego.Rego){rego.Query(query)}
 		if len(opts.PolicyPaths) > 0 {
-			args = append(args, rego.Load(opts.PolicyPaths, nil))
+			args = append(args, rego.Load(opts.PolicyPaths, keepRego))
 		}
 
 		prepared, err := rego.New(args...).PrepareForEval(ctx)

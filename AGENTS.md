@@ -81,6 +81,16 @@ This asymmetry is intentional. Do not "simplify" them into one path.
   to the repo cannot be passed off as one this pipeline produced.
 - `gate` abstains when zero units were scored — no approval, no merge. Zero
   units is also what a misconfigured root looks like.
+- A `--policy` path is searched recursively, and **only `.rego` files are
+  loaded** (`policy.keepRego`). The OPA loader would otherwise read `.json` and
+  `.yaml` under it as data documents, which makes a policy repository's own
+  fixtures part of the evaluation: one malformed fixture fails it outright, and
+  a `data.json` landing on `data.blastdoor` collides with the rule sets — a way
+  to disable policies with a file that never looks like one. Do not widen this
+  filter to "load the data files too" without answering that.
+- `--policy` paths that contain no `.rego` are an error. Compiling an empty
+  rule set would deny every change for want of a rule, which reads as a verdict
+  on the plan rather than as the mistyped path it is.
 - A 401/403 from GitLab is fatal. A token that cannot reach the API must not be
   mistaken for a change that needs no gate.
 - `gitlabapi.Unapprove` tolerates 404 and 401 (nothing to withdraw) but **not**
