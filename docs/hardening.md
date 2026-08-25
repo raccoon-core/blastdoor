@@ -1,8 +1,8 @@
 # Hardening
 
-Blastdoor scores plans. It is not, on its own, a security boundary. Everything
-below is about the gap between "the score was right" and "the change could not
-get in anyway".
+Blastdoor judges plans. It is not, on its own, a security boundary. Everything
+below is about the gap between "the verdict was right" and "the change could
+not get in anyway".
 
 Read this before relying on the gate for anything that matters.
 
@@ -14,7 +14,7 @@ Read this before relying on the gate for anything that matters.
   most severe wins, so **deleting** a rule makes a change *worse* (denied, for
   want of a rule), never better.
 - A `deny` also fails the job, so approving alone does not clear it.
-- A document that is not plan JSON is an error, never a score of 0.
+- A document that is not plan JSON is an error, never a plan with nothing to judge.
 - `blastdoor plan` wipes its output directory first, so a `plan.json` committed
   to the repository cannot be passed off as a plan this pipeline produced.
 - Raising the gate withdraws blastdoor's own earlier approval, so an approval
@@ -30,11 +30,10 @@ allow contains {"resource": rc.address, "reason": "trust me"} if {
 }
 ```
 
-to its own policy directory passes everything. Verdicts make this louder than
-the old scoring model did — the bypass now has to say "allow" in as many words,
-rather than hiding in a bookkeeping set — but it is still a bypass. The GitLab
-template guards `policy/` and `.gitlab-ci.yml` by default. **If you wire the
-commands up yourself, pass `--guard-path` or you have no gate.**
+to its own policy directory passes everything. A bypass has to say "allow" in
+as many words, which is at least glaring in a diff — but it is still a bypass.
+The GitLab template guards `policy/` and `.gitlab-ci.yml` by default. **If you
+wire the commands up yourself, pass `--guard-path` or you have no gate.**
 
 ## What blastdoor cannot enforce
 
@@ -111,5 +110,5 @@ prefer a dedicated bot account over a person's token.
 4. `BLASTDOOR_APPROVER_GROUP_IDS` set to a real group of people.
 5. The four GitLab settings above turned on.
 6. Plan job on an isolated runner with short-lived credentials.
-7. `--auto-merge` off until you have watched the scores on real changes for a
+7. `--auto-merge` off until you have watched the verdicts on real changes for a
    while.

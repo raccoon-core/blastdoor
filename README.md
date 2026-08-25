@@ -6,10 +6,9 @@ Blastdoor judges every change in a plan against [OPA](https://www.openpolicyagen
 policies you write. Each change comes back **pass**, **review** or **deny**, and
 the worst one decides the merge request.
 
-There is no score and no threshold. A policy author answers a question they can
-actually answer — is this fine, does a person need to look, or is this not
-allowed? — instead of inventing a number and hoping it lands the right side of
-a cutoff. **A change no policy matches is denied.**
+Each rule answers one question about one change — is this fine, does a person
+need to look, or is this not allowed — and says why in a sentence the reviewer
+reads. **A change no policy matches is denied.**
 
 ## Quick start
 
@@ -28,7 +27,7 @@ $ docker run --rm -v "$PWD:/work" raccooncore/blastdoor \
 | pass | … | `kafka_topic.topics["orders.created.v1"]` (create) | creating topic orders.created.v1 |
 ```
 
-Swap the plan for `unclassified-resource.json` and it comes back **denied**: no
+Swap the plan for `unmatched-resource.json` and it comes back **denied**: no
 rule matches an `aws_s3_bucket`, so the door stays shut and the summary names
 the change that needs one.
 
@@ -77,9 +76,8 @@ See [examples/](examples/) for a worked policy and a plan per scenario, and
 | `review` | A rule wants a person | Requires a human approval |
 | `deny` | A rule forbids it, or no rule matched it | Requires approval **and** fails the job, so the pipeline is red |
 
-The plan takes the worst verdict of any change in it. No arithmetic: ten
-changes a policy is happy with do not add up to a problem, and one it forbids
-is not offset by nine that are fine.
+The plan takes the worst verdict of any change in it: one change a policy
+forbids is not offset by nine it allows.
 
 `deny` and `review` are deliberately different. A review is a question for a
 person, and approving answers it. A denial is not — it says this should not

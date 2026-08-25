@@ -12,7 +12,7 @@ plan per scenario in [plans/](plans/). Every verdict below is asserted by
 | `no-op.json` | pass | Nothing changes, so nothing needs a rule |
 | `kafka-topic-delete.json` | review | Destroys data — recoverable, but somebody should say so |
 | `kafka-acl-wildcard.json` | **deny** | `User:*` on `*` grants unbounded access |
-| `unclassified-resource.json` | **deny** | No rule matches an `aws_s3_bucket` |
+| `unmatched-resource.json` | **deny** | No rule matches an `aws_s3_bucket` |
 | `managed-resource-read-lookalike.json` | **deny** | A *managed* resource, so the data-read rule does not apply |
 
 The last two are the interesting ones. Nothing matches an `aws_s3_bucket`, so
