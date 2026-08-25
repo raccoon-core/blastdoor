@@ -187,6 +187,12 @@ down. For a mise project it asks mise instead. With nothing pinned it uses
 OpenTofu. Every plan logs which it chose and what decided it; override with
 `--terragrunt-tf-path`.
 
+Whichever it lands on is recorded beside the plan and titles the summary, so
+the note on a merge request says **Terraform Blastdoor** or **OpenTofu
+Blastdoor** without anyone opening the job log. A repository part-way between
+the two gets both. The plan JSON cannot answer this on its own — it carries a
+`terraform_version` key whichever tool wrote it.
+
 ## GitLab
 
 Include the ready-made jobs:

@@ -70,7 +70,7 @@ in each unit.`,
 
 			for _, unit := range resolved {
 				fmt.Fprintf(cmd.ErrOrStderr(), "\n=== planning %s ===\n", unit)
-				planJSON, err := runner.Plan(cmd.Context(), unit, opts)
+				res, err := runner.Plan(cmd.Context(), unit, opts)
 				if err != nil {
 					return err
 				}
@@ -80,8 +80,18 @@ in each unit.`,
 					return fmt.Errorf("creating %s: %w", dest, err)
 				}
 				out := filepath.Join(dest, "plan.json")
-				if err := os.WriteFile(out, planJSON, 0o644); err != nil {
+				if err := os.WriteFile(out, res.JSON, 0o644); err != nil {
 					return fmt.Errorf("writing %s: %w", out, err)
+				}
+				// Recorded per unit rather than once for the run: eval reads
+				// this from a different job, and when the plans are split
+				// across parallel jobs their artifacts are merged. One file
+				// per unit merges; one file per run collides.
+				if res.Engine != "" {
+					engineFile := filepath.Join(dest, "engine.txt")
+					if err := os.WriteFile(engineFile, []byte(res.Engine+"\n"), 0o644); err != nil {
+						return fmt.Errorf("writing %s: %w", engineFile, err)
+					}
 				}
 				fmt.Fprintf(cmd.OutOrStdout(), "%s\n", out)
 			}

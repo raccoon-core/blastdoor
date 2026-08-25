@@ -39,13 +39,24 @@ type Options struct {
 	Log io.Writer
 }
 
+// Result is one unit's plan and what produced it.
+type Result struct {
+	// JSON is the plan, as 'show -json' wrote it.
+	JSON []byte
+	// Engine is the binary that actually planned: tofu or terraform. When
+	// Terragrunt runs the unit it is the binary Terragrunt wrapped, not
+	// Terragrunt itself, because that is what read the configuration and
+	// decided what would change.
+	Engine string
+}
+
 // Plan runs init, plan and show for a unit and returns the plan as JSON.
-func Plan(ctx context.Context, unitDir string, opts Options) ([]byte, error) {
+func Plan(ctx context.Context, unitDir string, opts Options) (Result, error) {
 	tool := opts.Tool
 	if tool == "" || tool == ToolAuto {
 		var err error
 		if tool, err = Detect(unitDir); err != nil {
-			return nil, err
+			return Result{}, err
 		}
 	}
 
@@ -59,9 +70,14 @@ func Plan(ctx context.Context, unitDir string, opts Options) ([]byte, error) {
 		log = os.Stderr
 	}
 
+	// Terragrunt is a wrapper: the plan is produced by whichever binary it
+	// wraps, and that is what the report should name.
+	engine := tool
+
 	var extraEnv []string
 	if tool == ToolTerragrunt {
 		wrapped, why := resolveTerragruntTF(ctx, unitDir, opts, manager)
+		engine = wrapped
 		fmt.Fprintf(log, "terragrunt wrapping %s (%s)\n", wrapped, why)
 		// TG_TF_PATH is Terragrunt v0.73+; TERRAGRUNT_TFPATH is the older
 		// name. Setting both keeps either version working.
@@ -84,10 +100,10 @@ func Plan(ctx context.Context, unitDir string, opts Options) ([]byte, error) {
 	}
 
 	if err := run("init", "-input=false"); err != nil {
-		return nil, err
+		return Result{}, err
 	}
 	if err := run("plan", "-input=false", "-out="+planFile); err != nil {
-		return nil, err
+		return Result{}, err
 	}
 	defer os.Remove(filepath.Join(unitDir, planFile))
 
@@ -96,9 +112,9 @@ func Plan(ctx context.Context, unitDir string, opts Options) ([]byte, error) {
 	show.Stderr = log
 	out, err := show.Output()
 	if err != nil {
-		return nil, fmt.Errorf("%s show -json in %s: %w", binary, unitDir, err)
+		return Result{}, fmt.Errorf("%s show -json in %s: %w", binary, unitDir, err)
 	}
-	return out, nil
+	return Result{JSON: out, Engine: string(engine)}, nil
 }
 
 // Detect picks a tool for a unit: Terragrunt if it is a Terragrunt unit,

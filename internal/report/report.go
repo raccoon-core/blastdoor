@@ -31,6 +31,52 @@ type Report struct {
 	Guarded []string `json:"guarded,omitempty"`
 	// Uncovered lists changed files that no plan accounts for.
 	Uncovered []string `json:"uncovered,omitempty"`
+	// Engines names what produced the plans — terraform, tofu, or both while
+	// a repository is moving between them. Empty when nothing recorded it.
+	Engines []string `json:"engines,omitempty"`
+}
+
+// engineNames are the products behind the binary names.
+var engineNames = map[string]string{
+	"terraform": "Terraform",
+	"tofu":      "OpenTofu",
+}
+
+// heading titles the note with the engine that produced the plans, so a
+// reader can see what ran without opening the job log.
+//
+// An engine with no name here is printed as it came, because a wrong name is
+// worse than an unfamiliar one, and nothing at all is printed when no engine
+// was recorded — plans passed straight to --plan, or written by a blastdoor
+// old enough not to have said.
+func (r Report) heading() string {
+	seen := map[string]bool{}
+	var engines []string
+	for _, e := range r.Engines {
+		if e == "" || seen[e] {
+			continue
+		}
+		seen[e] = true
+		engines = append(engines, e)
+	}
+	if len(engines) == 0 {
+		return "## Blastdoor\n\n"
+	}
+
+	// Sorted by binary name rather than by product name, so the order does
+	// not depend on which unit happened to be planned first, and "terraform"
+	// still sorts before "tofu".
+	sort.Strings(engines)
+
+	names := make([]string, 0, len(engines))
+	for _, e := range engines {
+		if name, ok := engineNames[e]; ok {
+			names = append(names, name)
+			continue
+		}
+		names = append(names, e)
+	}
+	return "## " + strings.Join(names, " + ") + " Blastdoor\n\n"
 }
 
 // Build folds the units into one verdict: the worst one anywhere.
@@ -124,7 +170,7 @@ func (r Report) WriteEnv(w io.Writer) error {
 func (r Report) WriteMarkdown(w io.Writer) error {
 	var b strings.Builder
 
-	b.WriteString("## Blastdoor\n\n")
+	b.WriteString(r.heading())
 	b.WriteString(r.headline())
 
 	if len(r.Guarded) > 0 {

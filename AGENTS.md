@@ -91,6 +91,13 @@ This asymmetry is intentional. Do not "simplify" them into one path.
 - `--policy` paths that contain no `.rego` are an error. Compiling an empty
   rule set would deny every change for want of a rule, which reads as a verdict
   on the plan rather than as the mistyped path it is.
+- `blastdoor plan` writes `engine.txt` next to each `plan.json`, naming the
+  binary that produced it, and `eval` reads it back to title the note
+  ("Terraform Blastdoor"). Per unit, not once per run: `eval` runs in another
+  job, and when plans are split across parallel jobs their artifacts are
+  merged — one file per unit merges, one file per run collides. It cannot come
+  from the plan JSON, which says `terraform_version` whichever tool wrote it.
+  A missing `engine.txt` is silence, not an error.
 - `.blastdoor.yml` is read from the working directory only — no search upwards,
   no per-directory files. The configuration is attacker-controlled, so a config
   found by walking up would let a merge request disable the checks for the

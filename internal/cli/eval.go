@@ -116,6 +116,7 @@ or --plan-dir at the tree 'blastdoor plan' produced, to judge a whole change.`,
 			}
 
 			rep := report.Build(units)
+			rep.Engines = enginesFor(plans)
 
 			// A change that edits its own policies or pipeline cannot be
 			// judged by them, so hand it to a person whatever it scored.
@@ -262,6 +263,32 @@ func trippedGuards(guardPaths []string, baseRef, headRef string) ([]string, erro
 		}
 	}
 	return tripped, nil
+}
+
+// enginesFor reads back what produced each plan, as 'blastdoor plan' recorded
+// it beside the plan itself.
+//
+// Missing files are not an error. Plans passed straight to --plan have no
+// engine recorded, and neither do plans from a blastdoor old enough not to
+// have written one; the report says nothing rather than guessing. The engine
+// cannot be read from the plan JSON, which carries a terraform_version key
+// whichever of the two wrote it.
+func enginesFor(plans []planInput) []string {
+	seen := map[string]bool{}
+	var out []string
+	for _, p := range plans {
+		raw, err := os.ReadFile(filepath.Join(filepath.Dir(p.file), "engine.txt"))
+		if err != nil {
+			continue
+		}
+		engine := strings.TrimSpace(string(raw))
+		if engine == "" || seen[engine] {
+			continue
+		}
+		seen[engine] = true
+		out = append(out, engine)
+	}
+	return out
 }
 
 // uncoveredFiles lists the changed files that select no unit, less the ones
