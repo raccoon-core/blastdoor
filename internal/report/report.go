@@ -227,6 +227,11 @@ func (r Report) WriteMarkdown(w io.Writer) error {
 func (r Report) headline() string {
 	pass, review, deny := r.Counts[policy.Pass], r.Counts[policy.Review], r.Counts[policy.Deny]
 
+	return emoji(r.Verdict) + " " + r.verdictSentence(pass, review, deny)
+}
+
+// verdictSentence says what the verdict means, in words.
+func (r Report) verdictSentence(pass, review, deny int) string {
 	switch r.Verdict {
 	case policy.Deny:
 		unjudged := r.unjudgedCount()
@@ -268,11 +273,28 @@ func (r Report) unjudgedCount() int {
 func marker(v policy.Verdict) string {
 	switch v {
 	case policy.Deny:
-		return "**deny**"
+		return emoji(v) + " **deny**"
 	case policy.Review:
-		return "review"
+		return emoji(v) + " review"
 	default:
-		return "pass"
+		return emoji(v) + " pass"
+	}
+}
+
+// emoji is the symbol for a verdict.
+//
+// It leads the overall verdict and the verdict column, so a note can be read
+// at a glance and a long table skimmed for the rows that need attention. The
+// word is always kept alongside it: a symbol on its own is lost on anyone
+// using a screen reader, and in a plain-text copy of the note.
+func emoji(v policy.Verdict) string {
+	switch v {
+	case policy.Deny:
+		return "❌"
+	case policy.Review:
+		return "👀"
+	default:
+		return "✅"
 	}
 }
 
