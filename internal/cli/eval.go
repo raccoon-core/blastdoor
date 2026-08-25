@@ -89,9 +89,6 @@ or --plan-dir at the tree 'blastdoor plan' produced, to judge a whole change.`,
 			// A change that edits its own policies or pipeline cannot be
 			// judged by them, so hand it to a person whatever it scored.
 			if len(guardPaths) > 0 {
-				if baseRef == "" {
-					baseRef = envOr("CI_MERGE_REQUEST_DIFF_BASE_SHA", "")
-				}
 				tripped, err := trippedGuards(guardPaths, baseRef, headRef)
 				if err != nil {
 					return err
@@ -122,7 +119,7 @@ or --plan-dir at the tree 'blastdoor plan' produced, to judge a whole change.`,
 	cmd.Flags().StringVar(&outDir, "out-dir", ".blastdoor", "directory to write report.json, summary.md and blastdoor.env into")
 	cmd.Flags().BoolVar(&failOnBlock, "fail-on-block", false, "exit non-zero unless every change passes")
 	cmd.Flags().StringArrayVar(&guardPaths, "guard-path", nil, "path whose modification forces review whatever the score (repeatable)")
-	cmd.Flags().StringVar(&baseRef, "base-ref", "", "git ref to diff from for --guard-path (default $CI_MERGE_REQUEST_DIFF_BASE_SHA)")
+	cmd.Flags().StringVar(&baseRef, "base-ref", "", "git ref to diff from for --guard-path (default: auto)")
 	cmd.Flags().StringVar(&headRef, "head-ref", "HEAD", "git ref to diff to for --guard-path")
 
 	return cmd

@@ -87,7 +87,7 @@ in each unit.`,
 	cmd.Flags().StringArrayVar(&units, "unit", nil, "unit directory to plan (repeatable)")
 	cmd.Flags().StringVar(&unitsFile, "units-file", "", "file listing unit directories, one per line")
 	cmd.Flags().StringVar(&root, "root", ".", "directory to scan when detecting units")
-	cmd.Flags().StringVar(&baseRef, "base-ref", "", "git ref to diff from when detecting units (default $CI_MERGE_REQUEST_DIFF_BASE_SHA)")
+	cmd.Flags().StringVar(&baseRef, "base-ref", "", "git ref to diff from when detecting units (default: auto)")
 	cmd.Flags().StringVar(&headRef, "head-ref", "HEAD", "git ref to diff to when detecting units")
 	cmd.Flags().StringVar(&outDir, "out-dir", ".blastdoor", "directory to write plan JSON into")
 	cmd.Flags().StringVar(&tool, "tool", "auto", "auto, tofu, terraform or terragrunt")
@@ -120,8 +120,5 @@ func resolveUnits(units []string, unitsFile, root, baseRef, headRef string) ([]s
 		return out, scanner.Err()
 	}
 
-	if baseRef == "" {
-		baseRef = envOr("CI_MERGE_REQUEST_DIFF_BASE_SHA", "")
-	}
 	return detect.Changed(detect.Options{Root: root, BaseRef: baseRef, HeadRef: headRef})
 }

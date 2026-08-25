@@ -9,6 +9,7 @@ package detect
 import (
 	"fmt"
 	"io/fs"
+	"os"
 	"os/exec"
 	"path"
 	"path/filepath"
@@ -115,21 +116,78 @@ func affected(units, changed []string, root string) []string {
 	return out
 }
 
-// ChangedFiles lists the paths that differ between BaseRef and HeadRef.
+// ResolveBaseRef works out what to diff against.
+//
+// On a merge request pipeline GitLab hands us the merge base directly. On a
+// branch pipeline it does not, and the obvious-looking variables are traps:
+// CI_COMMIT_SHA is HEAD, so diffing against it finds nothing at all. So fall
+// back to the merge base with the default branch, which is what "what does
+// this branch change" actually means.
+func ResolveBaseRef(opts Options) (string, error) {
+	if opts.BaseRef != "" {
+		return opts.BaseRef, nil
+	}
+	if sha := os.Getenv("CI_MERGE_REQUEST_DIFF_BASE_SHA"); sha != "" {
+		return sha, nil
+	}
+
+	head := opts.HeadRef
+	if head == "" {
+		head = "HEAD"
+	}
+
+	defaultBranch := os.Getenv("CI_DEFAULT_BRANCH")
+	if defaultBranch == "" {
+		defaultBranch = "main"
+	}
+
+	// origin/<branch> first: on a CI checkout the local branch usually does
+	// not exist, only the remote-tracking ref.
+	for _, candidate := range []string{"origin/" + defaultBranch, defaultBranch} {
+		cmd := exec.Command("git", "merge-base", candidate, head)
+		cmd.Dir = opts.RepoDir
+		out, err := cmd.Output()
+		if err == nil {
+			return strings.TrimSpace(string(out)), nil
+		}
+	}
+
+	return "", fmt.Errorf(
+		"cannot work out what to diff against: no --base-ref, no CI_MERGE_REQUEST_DIFF_BASE_SHA, "+
+			"and no merge base with %q or %q. On a branch pipeline set GIT_DEPTH: 0 so the default "+
+			"branch is fetched, or pass --base-ref explicitly",
+		"origin/"+defaultBranch, defaultBranch)
+}
+
+// ChangedFiles lists the paths that differ between the base and head refs.
 func ChangedFiles(opts Options) ([]string, error) {
-	if opts.BaseRef == "" {
-		return nil, fmt.Errorf("no base ref: pass --base-ref or set CI_MERGE_REQUEST_DIFF_BASE_SHA")
+	base, err := ResolveBaseRef(opts)
+	if err != nil {
+		return nil, err
 	}
 	head := opts.HeadRef
 	if head == "" {
 		head = "HEAD"
 	}
 
-	cmd := exec.Command("git", "diff", "--name-only", opts.BaseRef, head)
+	// An empty diff and a misconfigured base look identical downstream —
+	// no units, nothing planned, nothing gated. Refuse the one case that is
+	// always a mistake rather than reporting "no changes".
+	if same, err := sameCommit(opts.RepoDir, base, head); err == nil && same {
+		return nil, fmt.Errorf(
+			"base ref %q is the same commit as %q, so the diff is empty. On a branch pipeline "+
+				"CI_COMMIT_SHA is HEAD — leave --base-ref unset to diff against the default branch, "+
+				"or pass something like origin/main",
+			base, head)
+	}
+
+	// Three dots: changes on head since it forked, not changes that landed
+	// on the base branch afterwards.
+	cmd := exec.Command("git", "diff", "--name-only", base+"..."+head)
 	cmd.Dir = opts.RepoDir
 	out, err := cmd.Output()
 	if err != nil {
-		return nil, fmt.Errorf("git diff %s %s: %w", opts.BaseRef, head, err)
+		return nil, fmt.Errorf("git diff %s...%s: %w", base, head, err)
 	}
 
 	var files []string
@@ -153,4 +211,24 @@ func affectsPlan(file string) bool {
 	}
 	// Ext only sees ".json" for these, so match the full suffix.
 	return strings.HasSuffix(file, ".tf.json") || strings.HasSuffix(file, ".tfvars.json")
+}
+
+// sameCommit reports whether two refs resolve to the same commit.
+func sameCommit(repoDir, a, b string) (bool, error) {
+	resolve := func(ref string) (string, error) {
+		cmd := exec.Command("git", "rev-parse", ref)
+		cmd.Dir = repoDir
+		out, err := cmd.Output()
+		return strings.TrimSpace(string(out)), err
+	}
+
+	first, err := resolve(a)
+	if err != nil {
+		return false, err
+	}
+	second, err := resolve(b)
+	if err != nil {
+		return false, err
+	}
+	return first == second, nil
 }

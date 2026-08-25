@@ -18,9 +18,6 @@ ancestor directory up to --root, has a changed .hcl or .tf file. Shared files
 such as component.hcl therefore pull in every unit beneath them.`,
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
-			if opts.BaseRef == "" {
-				opts.BaseRef = envOr("CI_MERGE_REQUEST_DIFF_BASE_SHA", "")
-			}
 			units, err := detect.Changed(opts)
 			if err != nil {
 				return err
@@ -33,7 +30,7 @@ such as component.hcl therefore pull in every unit beneath them.`,
 	}
 
 	cmd.Flags().StringVar(&opts.Root, "root", ".", "directory to scan for units")
-	cmd.Flags().StringVar(&opts.BaseRef, "base-ref", "", "git ref to diff from (default $CI_MERGE_REQUEST_DIFF_BASE_SHA)")
+	cmd.Flags().StringVar(&opts.BaseRef, "base-ref", "", "git ref to diff from (default: the merge request base, else the merge base with the default branch)")
 	cmd.Flags().StringVar(&opts.HeadRef, "head-ref", "HEAD", "git ref to diff to")
 	cmd.Flags().StringVar(&opts.RepoDir, "repo-dir", "", "repository directory (default current directory)")
 

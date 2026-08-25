@@ -14,9 +14,17 @@
 #
 # The plan job needs whatever credentials your providers and state backend
 # already use; add them the way you would for any terraform job.
+#
+# Works on merge request pipelines and on plain branch pipelines. On a branch,
+# blastdoor diffs against the merge base with the default branch, which needs
+# the full history — hence GIT_DEPTH: 0 below. The gate then looks up the open
+# merge request for the branch; with none open it says so and does nothing.
 
 variables:
   BLASTDOOR_IMAGE: raccooncore/blastdoor:v1
+  # A shallow clone has no merge base with the default branch, which is what a
+  # branch pipeline diffs against.
+  GIT_DEPTH: "0"
   # Directory the jobs pass artifacts through.
   BLASTDOOR_DIR: .blastdoor
   # Where your policies live, relative to the repository root.
@@ -29,20 +37,25 @@ variables:
   BLASTDOOR_GUARD_PATHS: "$BLASTDOOR_POLICY_DIR .gitlab-ci.yml"
 
 .blastdoor:rules:
-  merge_request:
+  # Run on merge request pipelines, and on branch pipelines that no merge
+  # request pipeline already covers — the second condition is what stops the
+  # same commit being pipelined twice. Never on the default branch, where
+  # there is nothing to compare against.
+  default:
     - if: $CI_PIPELINE_SOURCE == "merge_request_event"
+    - if: $CI_COMMIT_BRANCH && $CI_COMMIT_BRANCH != $CI_DEFAULT_BRANCH && $CI_OPEN_MERGE_REQUESTS == null
 
 # Installs the tool versions each unit asks for, then plans every unit the
-# merge request touches. Version selection belongs to tenv or mise, whichever
+# change touches. Version selection belongs to tenv or mise, whichever
 # the unit is set up for.
 blastdoor:plan:
   stage: plan
   image: $BLASTDOOR_IMAGE
   rules:
-    - !reference [".blastdoor:rules", merge_request]
+    - !reference [".blastdoor:rules", default]
   script:
     - mkdir -p "$BLASTDOOR_DIR"
-    - blastdoor detect --root "$BLASTDOOR_ROOT" --base-ref "$CI_MERGE_REQUEST_DIFF_BASE_SHA" | tee "$BLASTDOOR_DIR/units.txt"
+    - blastdoor detect --root "$BLASTDOOR_ROOT" | tee "$BLASTDOOR_DIR/units.txt"
     # Install the tool versions first, in the same job: a toolchain that will
     # not install should not look like a plan that will not run.
     - blastdoor prepare --units-file "$BLASTDOOR_DIR/units.txt"
@@ -60,7 +73,7 @@ blastdoor:eval:
     - job: blastdoor:plan
       artifacts: true
   rules:
-    - !reference [".blastdoor:rules", merge_request]
+    - !reference [".blastdoor:rules", default]
   script:
     - |
       guards=""
@@ -68,7 +81,6 @@ blastdoor:eval:
       blastdoor eval \
         --plan-dir "$BLASTDOOR_DIR" \
         --policy "$BLASTDOOR_POLICY_DIR" \
-        --base-ref "$CI_MERGE_REQUEST_DIFF_BASE_SHA" \
         --out-dir "$BLASTDOOR_DIR" \
         $guards
   artifacts:
@@ -89,6 +101,6 @@ blastdoor:gate:
     - job: blastdoor:eval
       artifacts: true
   rules:
-    - !reference [".blastdoor:rules", merge_request]
+    - !reference [".blastdoor:rules", default]
   script:
     - blastdoor gate --report "$BLASTDOOR_DIR/report.json" --summary "$BLASTDOOR_DIR/summary.md"

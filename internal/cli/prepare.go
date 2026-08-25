@@ -73,7 +73,7 @@ is installed, otherwise tenv.`,
 	cmd.Flags().StringArrayVar(&units, "unit", nil, "unit directory to prepare (repeatable)")
 	cmd.Flags().StringVar(&unitsFile, "units-file", "", "file listing unit directories, one per line")
 	cmd.Flags().StringVar(&root, "root", ".", "directory to scan when detecting units")
-	cmd.Flags().StringVar(&baseRef, "base-ref", "", "git ref to diff from when detecting units (default $CI_MERGE_REQUEST_DIFF_BASE_SHA)")
+	cmd.Flags().StringVar(&baseRef, "base-ref", "", "git ref to diff from when detecting units (default: auto)")
 	cmd.Flags().StringVar(&headRef, "head-ref", "HEAD", "git ref to diff to when detecting units")
 	cmd.Flags().StringVar(&manager, "manager", "auto", "auto, tenv, mise or none")
 	cmd.Flags().StringVar(&tool, "tool", "auto", "auto, tofu, terraform or terragrunt")

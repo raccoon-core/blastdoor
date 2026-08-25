@@ -88,6 +88,19 @@ This asymmetry is intentional. Do not "simplify" them into one path.
 - Raising the gate calls `Unapprove` first, so an approval earned by an earlier
   safe push does not carry over to a worse one.
 
+### The base ref is resolved, never assumed
+
+`detect.ResolveBaseRef` tries `--base-ref`, then
+`CI_MERGE_REQUEST_DIFF_BASE_SHA`, then the merge base with the default branch.
+The branch case is the one people get wrong: `CI_COMMIT_SHA` is `HEAD`, so
+using it as a base yields an empty diff, no units, and a pipeline that gates
+nothing while looking green. `ChangedFiles` errors when the base resolves to
+HEAD instead of reporting "no changes".
+
+The diff uses three dots (`base...head`) so work that landed on the default
+branch after the fork is not attributed to this change. Do not "simplify" it to
+two dots.
+
 ### mise runs with MISE_SAFE=1
 
 A repository's `mise.toml` can execute code during version resolution — hooks,

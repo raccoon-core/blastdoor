@@ -5,6 +5,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"reflect"
+	"strings"
 	"testing"
 )
 
@@ -112,9 +113,14 @@ func TestChangedIgnoresUnrelatedFiles(t *testing.T) {
 	}
 }
 
-func TestChangedRequiresBaseRef(t *testing.T) {
+// On the default branch itself there is nothing to compare against, which is
+// an error rather than an empty result that would gate nothing.
+func TestChangedOnTheDefaultBranchHasNoBase(t *testing.T) {
+	t.Setenv("CI_MERGE_REQUEST_DIFF_BASE_SHA", "")
+	t.Setenv("CI_DEFAULT_BRANCH", "main")
+
 	if _, err := Changed(Options{Root: "terraform", RepoDir: repo(t)}); err == nil {
-		t.Fatal("expected an error when no base ref is given")
+		t.Fatal("expected an error: HEAD is the default branch, so there is nothing to diff")
 	}
 }
 
@@ -160,5 +166,132 @@ func TestChangedPicksUpVariableFiles(t *testing.T) {
 				t.Errorf("got %v, want [terraform/kafka/stg]", got)
 			}
 		})
+	}
+}
+
+// branch creates a branch off the current HEAD.
+func branch(t *testing.T, dir, name string) {
+	t.Helper()
+	cmd := exec.Command("git", "checkout", "-q", "-b", name)
+	cmd.Dir = dir
+	if out, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("git checkout -b %s: %v\n%s", name, err, out)
+	}
+}
+
+func checkout(t *testing.T, dir, name string) {
+	t.Helper()
+	cmd := exec.Command("git", "checkout", "-q", name)
+	cmd.Dir = dir
+	if out, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("git checkout %s: %v\n%s", name, err, out)
+	}
+}
+
+// On a branch pipeline there is no merge request base, so blastdoor has to
+// work one out from the default branch by itself.
+func TestChangedOnABranchWithoutAnyBaseRef(t *testing.T) {
+	t.Setenv("CI_MERGE_REQUEST_DIFF_BASE_SHA", "")
+	t.Setenv("CI_DEFAULT_BRANCH", "main")
+
+	dir := repo(t)
+	branch(t, dir, "feature")
+	commit(t, dir, "terraform/kafka/stg/terragrunt.hcl", "inputs = { a = 1 }\n")
+
+	got, err := Changed(Options{Root: "terraform", RepoDir: dir})
+	if err != nil {
+		t.Fatalf("Changed: %v", err)
+	}
+	want := []string{"terraform/kafka/stg"}
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("got %v, want %v", got, want)
+	}
+}
+
+// CI_COMMIT_SHA is HEAD on a branch pipeline, so using it as the base finds
+// nothing. That must be an error, not a quiet "no changes" that leaves the
+// whole pipeline gating nothing.
+func TestChangedRejectsABaseRefEqualToHead(t *testing.T) {
+	dir := repo(t)
+	branch(t, dir, "feature")
+	commit(t, dir, "terraform/kafka/stg/terragrunt.hcl", "inputs = { a = 1 }\n")
+
+	head, err := exec.Command("git", "-C", dir, "rev-parse", "HEAD").Output()
+	if err != nil {
+		t.Fatalf("rev-parse: %v", err)
+	}
+
+	_, err = Changed(Options{Root: "terraform", BaseRef: strings.TrimSpace(string(head)), RepoDir: dir})
+	if err == nil {
+		t.Fatal("a base ref equal to HEAD was accepted, so the diff was silently empty")
+	}
+	if !strings.Contains(err.Error(), "same commit") {
+		t.Errorf("error does not explain the problem: %v", err)
+	}
+}
+
+// Work that landed on the default branch after this one forked is not this
+// branch's doing, and must not be planned as if it were.
+func TestChangedIgnoresCommitsLandedOnTheBaseBranch(t *testing.T) {
+	t.Setenv("CI_MERGE_REQUEST_DIFF_BASE_SHA", "")
+	t.Setenv("CI_DEFAULT_BRANCH", "main")
+
+	dir := repo(t)
+	branch(t, dir, "feature")
+	commit(t, dir, "terraform/kafka/stg/terragrunt.hcl", "inputs = { a = 1 }\n")
+
+	// Someone else changes a different unit on main, after the fork.
+	checkout(t, dir, "main")
+	commit(t, dir, "terraform/s3/prd/terragrunt.hcl", "inputs = { b = 2 }\n")
+	checkout(t, dir, "feature")
+
+	got, err := Changed(Options{Root: "terraform", RepoDir: dir})
+	if err != nil {
+		t.Fatalf("Changed: %v", err)
+	}
+
+	want := []string{"terraform/kafka/stg"}
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("got %v, want %v — the other branch's unit leaked in", got, want)
+	}
+}
+
+// An explicit base ref still wins over everything blastdoor would work out.
+func TestResolveBaseRefPrefersTheExplicitOne(t *testing.T) {
+	t.Setenv("CI_MERGE_REQUEST_DIFF_BASE_SHA", "deadbeef")
+
+	got, err := ResolveBaseRef(Options{BaseRef: "origin/release", RepoDir: repo(t)})
+	if err != nil {
+		t.Fatalf("ResolveBaseRef: %v", err)
+	}
+	if got != "origin/release" {
+		t.Errorf("got %q, want origin/release", got)
+	}
+}
+
+// A merge request pipeline hands us the merge base directly; use it.
+func TestResolveBaseRefUsesTheMergeRequestBase(t *testing.T) {
+	t.Setenv("CI_MERGE_REQUEST_DIFF_BASE_SHA", "cafebabe")
+
+	got, err := ResolveBaseRef(Options{RepoDir: repo(t)})
+	if err != nil {
+		t.Fatalf("ResolveBaseRef: %v", err)
+	}
+	if got != "cafebabe" {
+		t.Errorf("got %q, want cafebabe", got)
+	}
+}
+
+// Nothing to go on is an error that says what to do, not a silent empty diff.
+func TestResolveBaseRefFailsWithGuidance(t *testing.T) {
+	t.Setenv("CI_MERGE_REQUEST_DIFF_BASE_SHA", "")
+	t.Setenv("CI_DEFAULT_BRANCH", "no-such-branch")
+
+	_, err := ResolveBaseRef(Options{RepoDir: repo(t)})
+	if err == nil {
+		t.Fatal("expected an error when there is no base to work out")
+	}
+	if !strings.Contains(err.Error(), "GIT_DEPTH") {
+		t.Errorf("error does not mention the shallow-clone fix: %v", err)
 	}
 }

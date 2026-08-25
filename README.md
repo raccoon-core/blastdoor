@@ -158,6 +158,27 @@ passing merge request, requires an approval on `review`, and on `deny` also
 fails the job. A 401/403 fails the job rather than being mistaken for "nothing
 to gate".
 
+### Merge request or branch
+
+Both work. What changes is where the diff starts from:
+
+| Pipeline | Base of the diff |
+|---|---|
+| Merge request | `CI_MERGE_REQUEST_DIFF_BASE_SHA`, which GitLab has already worked out |
+| Branch | The merge base with `CI_DEFAULT_BRANCH` |
+
+Leave `--base-ref` unset and blastdoor picks the right one. Do not pass
+`$CI_COMMIT_SHA` on a branch pipeline — it *is* `HEAD`, so the diff is empty
+and nothing gets planned or gated. Blastdoor refuses that rather than reporting
+"no changes".
+
+A branch pipeline needs the full history for the merge base, so the template
+sets `GIT_DEPTH: 0`. Only work that landed on the branch counts; commits that
+reached the default branch afterwards do not.
+
+`gate` finds the open merge request for the branch by itself. With none open it
+says so and does nothing, so the earlier jobs still report on every push.
+
 See [ci/gitlab/blastdoor.yml](ci/gitlab/blastdoor.yml) for the variables.
 
 ## Install
