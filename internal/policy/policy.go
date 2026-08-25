@@ -18,6 +18,8 @@ import (
 	"strings"
 
 	"github.com/open-policy-agent/opa/v1/rego"
+	"github.com/open-policy-agent/opa/v1/storage"
+	"github.com/open-policy-agent/opa/v1/storage/inmem"
 )
 
 // Verdict is what a policy decided about a change.
@@ -142,7 +144,22 @@ func ValidatePlan(plan any) error {
 type Options struct {
 	// PolicyPaths are directories or .rego files to load.
 	PolicyPaths []string
+	// Vars are values a repository sets for the policies to read, reachable
+	// as data.vars. They let a shared rule carry a default that a repository
+	// can move:
+	//
+	//	default max_partitions := 10
+	//	max_partitions := data.vars.max_partitions if { data.vars.max_partitions }
+	//
+	// Mounted at data.vars, never at the root, so a variable cannot land on
+	// data.blastdoor and displace the rule sets themselves. That is the
+	// difference between this and letting the loader read .json and .yaml
+	// out of a policy directory, which it deliberately does not.
+	Vars map[string]any
 }
+
+// VarsRoot is where Vars are mounted. Anything but "blastdoor".
+const VarsRoot = "vars"
 
 // Evaluator holds a compiled set of policies, ready to judge many plans.
 type Evaluator struct {
@@ -216,19 +233,52 @@ func New(ctx context.Context, opts Options) (*Evaluator, error) {
 		}
 	}
 
+	// One store for all three queries, holding the repository's variables.
+	var store storage.Store
+	if len(opts.Vars) > 0 {
+		store = inmem.NewFromObject(map[string]any{VarsRoot: opts.Vars})
+	}
+
 	for verdict, query := range Queries {
 		args := []func(*rego.Rego){rego.Query(query)}
 		if len(opts.PolicyPaths) > 0 {
 			args = append(args, rego.Load(opts.PolicyPaths, keepRego))
 		}
 
-		prepared, err := rego.New(args...).PrepareForEval(ctx)
+		prepared, err := prepare(ctx, store, args)
 		if err != nil {
 			return nil, fmt.Errorf("compiling policies for %s: %w", query, err)
 		}
 		e.queries[verdict] = prepared
 	}
 	return e, nil
+}
+
+// prepare compiles one query, against the variables store when there is one.
+//
+// Loading policies is a write to the store, so it needs a transaction of its
+// own, committed before anything is evaluated — an evaluation opens its own
+// read transaction, and would not see data left in an open write.
+func prepare(ctx context.Context, store storage.Store, args []func(*rego.Rego)) (rego.PreparedEvalQuery, error) {
+	if store == nil {
+		return rego.New(args...).PrepareForEval(ctx)
+	}
+
+	txn, err := store.NewTransaction(ctx, storage.WriteParams)
+	if err != nil {
+		return rego.PreparedEvalQuery{}, fmt.Errorf("opening a transaction for the variables: %w", err)
+	}
+
+	args = append(args, rego.Store(store), rego.Transaction(txn))
+	prepared, err := rego.New(args...).PrepareForEval(ctx)
+	if err != nil {
+		store.Abort(ctx, txn)
+		return rego.PreparedEvalQuery{}, err
+	}
+	if err := store.Commit(ctx, txn); err != nil {
+		return rego.PreparedEvalQuery{}, fmt.Errorf("storing the variables: %w", err)
+	}
+	return prepared, nil
 }
 
 // Evaluate judges every real change in a plan.

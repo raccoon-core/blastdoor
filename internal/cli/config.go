@@ -95,10 +95,16 @@ func groupIDStrings(ids []int) []string {
 // whichever list won, an empty one included. Without it a config that names
 // no guards would guard nothing — itself least of all — and a merge request
 // could edit .blastdoor.yml to ignore the very tree it is changing.
-func guardPathsFor(cmd *cobra.Command, flagValue []string) []string {
-	guards := pickList(cmd, "guard-path", flagValue, cfg().Guard)
+//
+// stated reports whether anyone asked for guards, as opposed to blastdoor
+// adding its own config. It decides what happens when the guards cannot be
+// checked: see requireGuards.
+func guardPathsFor(cmd *cobra.Command, flagValue []string) (guards []string, stated bool) {
+	guards = pickList(cmd, "guard-path", flagValue, cfg().Guard)
+	stated = len(guards) > 0
+
 	if path := cfg().Path; path != "" {
 		guards = append(append([]string{}, guards...), path)
 	}
-	return guards
+	return guards, stated
 }

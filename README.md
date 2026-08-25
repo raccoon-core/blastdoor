@@ -135,6 +135,8 @@ guard:
 ignore:
   - ansible
   - "**/README.md"
+vars:
+  max_partitions: 32
 ```
 
 Blastdoor reads it from the directory it runs in. There is no search upwards
@@ -144,6 +146,25 @@ has to exist.
 
 One rule decides every setting: **the flag if it was given, otherwise the
 config, otherwise the default.** Lists are replaced whole, never merged.
+
+`vars` is the exception in shape rather than precedence: its keys belong to
+whoever wrote the policies, so it is the one place unknown names are not an
+error. Policies read them as `data.vars`, which is what lets a shared rule
+carry a default a repository can move:
+
+```rego
+default max_partitions := 10
+
+max_partitions := data.vars.max_partitions if {
+	data.vars.max_partitions
+}
+```
+
+They are mounted at `data.vars` and never at the root, so a variable cannot
+land on `data.blastdoor` and displace the rules themselves — the reason this
+exists rather than letting the loader read `.json` out of a policy directory.
+Nothing caps what a repository may set: the config guards itself, so raising a
+limit forces a person to look at the commit that raised it.
 
 Two things do not follow that rule, both on purpose:
 

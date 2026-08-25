@@ -98,6 +98,12 @@ This asymmetry is intentional. Do not "simplify" them into one path.
   merged — one file per unit merges, one file per run collides. It cannot come
   from the plan JSON, which says `terraform_version` whichever tool wrote it.
   A missing `engine.txt` is silence, not an error.
+- Policy variables (`vars:`) are mounted at `data.vars` via `rego.Store`, never
+  merged into the data root. A variable that could reach `data.blastdoor` would
+  displace the rule sets, which is the same hole `keepRego` closes from the
+  other side. Loading policies is a store write, so it needs its own
+  transaction, committed before evaluation — an eval opens a read transaction
+  and would not see data sitting in an open write.
 - `.blastdoor.yml` is read from the working directory only — no search upwards,
   no per-directory files. The configuration is attacker-controlled, so a config
   found by walking up would let a merge request disable the checks for the

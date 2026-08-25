@@ -129,6 +129,12 @@ type Config struct {
 	Guard           []string `yaml:"guard"`
 	Ignore          []string `yaml:"ignore"`
 
+	// Vars are values the policies read as data.vars, so a shared rule can
+	// carry a default this repository moves. Free-form on purpose: the keys
+	// belong to whoever wrote the policies, not to blastdoor, which is why
+	// this is the one place unknown names are not an error.
+	Vars map[string]any `yaml:"vars"`
+
 	ApproverGroupIDs []int  `yaml:"approver_group_ids"`
 	RuleName         string `yaml:"rule_name"`
 	AutoMerge        *bool  `yaml:"auto_merge"`

@@ -74,7 +74,7 @@ or --plan-dir at the tree 'blastdoor plan' produced, to judge a whole change.`,
 			policyPaths = pickList(cmd, "policy", policyPaths, cfg().Policy)
 			ignorePaths = pickList(cmd, "ignore-path", ignorePaths, cfg().Ignore)
 			requireCoverage = pickBool(cmd, "require-coverage", requireCoverage, cfg().RequireCoverage)
-			guardPaths = guardPathsFor(cmd, guardPaths)
+			guardPaths, guardsStated := guardPathsFor(cmd, guardPaths)
 
 			plans, err := collectPlans(planFiles, planDir)
 			if err != nil {
@@ -87,7 +87,10 @@ or --plan-dir at the tree 'blastdoor plan' produced, to judge a whole change.`,
 				return fmt.Errorf("no plan JSON to score: pass --plan or --plan-dir")
 			}
 
-			evaluator, err := policy.New(cmd.Context(), policy.Options{PolicyPaths: policyPaths})
+			evaluator, err := policy.New(cmd.Context(), policy.Options{
+				PolicyPaths: policyPaths,
+				Vars:        cfg().Vars,
+			})
 			if err != nil {
 				return err
 			}
@@ -122,10 +125,25 @@ or --plan-dir at the tree 'blastdoor plan' produced, to judge a whole change.`,
 			// judged by them, so hand it to a person whatever it scored.
 			if len(guardPaths) > 0 {
 				tripped, err := trippedGuards(guardPaths, baseRef, headRef)
-				if err != nil {
+				switch {
+				case err == nil:
+					rep.RequireReview(tripped)
+
+				// Someone wrote a guard list down, so failing to check it is
+				// an error: the caller asked for a guarantee blastdoor cannot
+				// give, and a verdict that quietly skipped the check is worse
+				// than no verdict.
+				case guardsStated:
 					return err
+
+				// The only guard is the config guarding itself, and there is
+				// no diff to check it against — no merge request, so nothing
+				// to gate and nothing to guard. This is someone trying a
+				// policy against a saved plan.
+				default:
+					fmt.Fprintf(cmd.ErrOrStderr(),
+						"no diff to check %s against, so it is not guarded here\n", cfg().Path)
 				}
-				rep.RequireReview(tripped)
 			}
 
 			// A file no unit selects is planned by nothing and judged by

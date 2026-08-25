@@ -89,7 +89,7 @@ func TestGuardListIsReplacedNotMerged(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	got := guardPathsFor(cmd, []string{"policy"})
+	got, _ := guardPathsFor(cmd, []string{"policy"})
 	want := []string{"policy", config.FileName}
 	if !reflect.DeepEqual(got, want) {
 		t.Errorf("guards = %v, want %v: the flag list replaces the config's", got, want)
@@ -106,7 +106,7 @@ func TestConfigIsGuardedEvenWhenItNamesNone(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	got := guardPathsFor(cmd, nil)
+	got, _ := guardPathsFor(cmd, nil)
 	if !reflect.DeepEqual(got, []string{config.FileName}) {
 		t.Errorf("guards = %v, want the config itself to be guarded", got)
 	}
@@ -121,7 +121,7 @@ func TestNoConfigLeavesGuardsAlone(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	got := guardPathsFor(cmd, []string{"policy"})
+	got, _ := guardPathsFor(cmd, []string{"policy"})
 	if !reflect.DeepEqual(got, []string{"policy"}) {
 		t.Errorf("guards = %v, want just the flag", got)
 	}
