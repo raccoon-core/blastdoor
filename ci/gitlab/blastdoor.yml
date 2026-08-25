@@ -32,9 +32,9 @@ variables:
   merge_request:
     - if: $CI_PIPELINE_SOURCE == "merge_request_event"
 
-# Plans every unit the merge request touches. Version selection is tenv's job:
-# it reads the .opentofu-version / .terraform-version / .terragrunt-version
-# files in each unit.
+# Installs the tool versions each unit asks for, then plans every unit the
+# merge request touches. Version selection belongs to tenv or mise, whichever
+# the unit is set up for.
 blastdoor:plan:
   stage: plan
   image: $BLASTDOOR_IMAGE
@@ -43,6 +43,9 @@ blastdoor:plan:
   script:
     - mkdir -p "$BLASTDOOR_DIR"
     - blastdoor detect --root "$BLASTDOOR_ROOT" --base-ref "$CI_MERGE_REQUEST_DIFF_BASE_SHA" | tee "$BLASTDOOR_DIR/units.txt"
+    # Install the tool versions first, in the same job: a toolchain that will
+    # not install should not look like a plan that will not run.
+    - blastdoor prepare --units-file "$BLASTDOOR_DIR/units.txt"
     - blastdoor plan --units-file "$BLASTDOOR_DIR/units.txt" --out-dir "$BLASTDOOR_DIR"
   artifacts:
     paths:

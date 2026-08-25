@@ -61,6 +61,11 @@ providers, `data "external"` programs and any plan-time hook. Whoever opens the
 merge request runs code on your runner, with the runner's Vault, Consul and
 Kafka credentials.
 
+Version resolution is a second way in, which is why `blastdoor prepare` runs
+mise with `MISE_SAFE=1`: a repository's own `mise.toml` can otherwise run hooks,
+tasks and `exec()` while its tool versions are being worked out, before any
+plan starts.
+
 A gate bypass is the smaller problem here: an attacker who can plan can read
 those credentials directly. Run the plan job on an isolated runner with
 narrowly scoped, short-lived credentials, and treat plan-time as untrusted

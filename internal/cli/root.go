@@ -30,6 +30,7 @@ policy covers is never waved through.`,
 
 	root.AddCommand(
 		newDetectCmd(),
+		newPrepareCmd(),
 		newPlanCmd(),
 		newEvalCmd(),
 		newGateCmd(),

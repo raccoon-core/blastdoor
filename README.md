@@ -106,6 +106,7 @@ it, or delete the job that runs them, does not need to beat them. Pass
 | Command | What it does |
 |---|---|
 | `blastdoor detect` | Lists the units a change touches, from the git diff |
+| `blastdoor prepare` | Installs the tool versions those units need |
 | `blastdoor plan` | Runs init/plan/show for each unit, saving plan JSON |
 | `blastdoor eval` | Judges plan JSON, writing `report.json`, `summary.md`, `blastdoor.env` |
 | `blastdoor gate` | Posts the summary on a GitLab merge request and gates it |
@@ -120,10 +121,22 @@ every environment under it.
 
 ## Terraform, OpenTofu, Terragrunt
 
-Version selection is [tenv](https://github.com/tofuutils/tenv)'s job. The image
-ships it with `TENV_AUTO_INSTALL=true`, so each unit gets the version its
-`.opentofu-version`, `.terraform-version`, `.terragrunt-version` file or
-`terragrunt.hcl` constraint asks for.
+Which version runs is a version manager's job, and the image ships both:
+
+| Manager | Reads | Used when |
+|---|---|---|
+| [tenv](https://github.com/tofuutils/tenv) | `.opentofu-version`, `.terraform-version`, `.terragrunt-version`, `terragrunt.hcl` constraints | The default |
+| [mise](https://mise.jdx.dev) | `mise.toml`, `.tool-versions` | The unit or an ancestor is a mise project |
+
+`blastdoor prepare` installs those versions before anything is planned. Run it
+in the same job as `plan` — as its own step, so a toolchain that will not
+install does not look like a plan that will not run. `--manager` overrides the
+choice (`auto`, `tenv`, `mise`, `none`); `none` uses whatever is on `PATH`.
+
+mise runs with `MISE_SAFE=1`, which stops a repository's own `mise.toml`
+executing code — hooks, tasks, `[env]` injection, `exec()` in templates —
+while resolving versions. Blastdoor judges merge requests it does not trust, so
+this is on by default and should stay on.
 
 `blastdoor plan --tool` picks the binary; the default `auto` uses Terragrunt for
 a Terragrunt unit and otherwise follows the version files, defaulting to
@@ -158,8 +171,9 @@ go install github.com/raccoon-core/blastdoor/cmd/blastdoor@latest
 Binaries for linux, macOS and Windows are attached to each
 [release](https://github.com/raccoon-core/blastdoor/releases).
 
-The image bundles tenv, so `plan` works out of the box. A bare binary gives you
-`eval` and `gate`; `plan` also needs tofu/terraform/terragrunt on your `PATH`.
+The image bundles tenv and mise, so `prepare` and `plan` work out of the box. A
+bare binary gives you `eval` and `gate`; `prepare` needs tenv or mise, and
+`plan` needs tofu/terraform/terragrunt reachable one way or another.
 
 ## Contributing
 

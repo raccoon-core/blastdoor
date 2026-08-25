@@ -88,6 +88,16 @@ This asymmetry is intentional. Do not "simplify" them into one path.
 - Raising the gate calls `Unapprove` first, so an approval earned by an earlier
   safe push does not carry over to a worse one.
 
+### mise runs with MISE_SAFE=1
+
+A repository's `mise.toml` can execute code during version resolution — hooks,
+tasks, `_.source`, `exec()` in templates. Blastdoor resolves versions from
+configuration written by whoever opened the merge request, which is exactly the
+case mise's safe mode exists for.
+
+`runner.miseEnv` sets `MISE_SAFE=1`, and the image sets it too. Do not remove
+either, and do not add a flag to turn it off.
+
 ### `--guard-path` is the only thing stopping self-approval
 
 Policies usually live in the repository they gate, so a merge request can
@@ -133,11 +143,11 @@ are errors rather than warnings, by design.
 | Path | What |
 |---|---|
 | `cmd/blastdoor` | Entry point |
-| `internal/cli` | One file per command: detect, plan, eval, gate |
+| `internal/cli` | One file per command: detect, prepare, plan, eval, gate |
 | `internal/policy` | Rego evaluation, verdicts, plan validation |
 | `internal/report` | Folding verdicts into one, JSON/Markdown/dotenv output |
 | `internal/detect` | Which units a git diff touches |
-| `internal/runner` | Shelling out to tofu/terraform/terragrunt via tenv |
+| `internal/runner` | Shelling out to tofu/terraform/terragrunt; `toolchain.go` picks tenv or mise |
 | `internal/gitlabapi` | The GitLab REST calls the gate needs |
 | `examples` | Worked policies and plans, verified by `examples_test.go` |
 | `ci/gitlab` | The template consumers include |

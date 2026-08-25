@@ -22,6 +22,7 @@ func newPlanCmd() *cobra.Command {
 		outDir    string
 		tool      string
 		tgTFPath  string
+		manager   string
 	)
 
 	cmd := &cobra.Command{
@@ -58,6 +59,7 @@ in each unit.`,
 			opts := runner.Options{
 				Tool:             runner.Tool(tool),
 				TerragruntTFPath: tgTFPath,
+				Manager:          runner.Manager(manager),
 				Log:              cmd.ErrOrStderr(),
 			}
 
@@ -90,6 +92,7 @@ in each unit.`,
 	cmd.Flags().StringVar(&outDir, "out-dir", ".blastdoor", "directory to write plan JSON into")
 	cmd.Flags().StringVar(&tool, "tool", "auto", "auto, tofu, terraform or terragrunt")
 	cmd.Flags().StringVar(&tgTFPath, "terragrunt-tf-path", "tofu", "binary Terragrunt wraps")
+	cmd.Flags().StringVar(&manager, "manager", "auto", "version manager: auto, tenv, mise or none")
 
 	return cmd
 }

@@ -1,11 +1,8 @@
 // Package runner produces plan JSON for a unit by shelling out to OpenTofu,
 // Terraform or Terragrunt.
 //
-// Binary versions are left to tenv: its shims read .opentofu-version,
-// .terraform-version, .terragrunt-version and the terragrunt.hcl constraints
-// in the unit, and with TENV_AUTO_INSTALL=true they fetch what is missing. So
-// blastdoor just calls `tofu`/`terraform`/`terragrunt` and lets tenv resolve
-// the version.
+// Which version runs is left to a version manager — tenv or mise, whichever
+// the unit is set up for. See toolchain.go.
 package runner
 
 import (
@@ -13,7 +10,6 @@ import (
 	"fmt"
 	"io"
 	"os"
-	"os/exec"
 	"path/filepath"
 )
 
@@ -37,6 +33,8 @@ type Options struct {
 	Tool Tool
 	// TerragruntTFPath is the binary Terragrunt wraps. Defaults to tofu.
 	TerragruntTFPath string
+	// Manager is the version manager, or ManagerAuto to detect one.
+	Manager Manager
 	// Log receives the tool's stdout/stderr. Defaults to os.Stderr.
 	Log io.Writer
 }
@@ -51,12 +49,17 @@ func Plan(ctx context.Context, unitDir string, opts Options) ([]byte, error) {
 		}
 	}
 
+	manager := opts.Manager
+	if manager == "" || manager == ManagerAuto {
+		manager = DetectManager(unitDir)
+	}
+
 	log := opts.Log
 	if log == nil {
 		log = os.Stderr
 	}
 
-	env := os.Environ()
+	var extraEnv []string
 	if tool == ToolTerragrunt {
 		tfPath := opts.TerragruntTFPath
 		if tfPath == "" {
@@ -64,16 +67,14 @@ func Plan(ctx context.Context, unitDir string, opts Options) ([]byte, error) {
 		}
 		// TG_TF_PATH is Terragrunt v0.73+; TERRAGRUNT_TFPATH is the older
 		// name. Setting both keeps either version working.
-		env = append(env, "TG_TF_PATH="+tfPath, "TERRAGRUNT_TFPATH="+tfPath)
+		extraEnv = append(extraEnv, "TG_TF_PATH="+tfPath, "TERRAGRUNT_TFPATH="+tfPath)
 	}
 
 	binary := string(tool)
 	planFile := "blastdoor.tfplan"
 
 	run := func(args ...string) error {
-		cmd := exec.CommandContext(ctx, binary, args...)
-		cmd.Dir = unitDir
-		cmd.Env = env
+		cmd := toolCommand(ctx, manager, unitDir, binary, extraEnv, args...)
 		cmd.Stdout = log
 		cmd.Stderr = log
 		if err := cmd.Run(); err != nil {
@@ -91,9 +92,7 @@ func Plan(ctx context.Context, unitDir string, opts Options) ([]byte, error) {
 	defer os.Remove(filepath.Join(unitDir, planFile))
 
 	// show writes the JSON to stdout, so it does not share the log writer.
-	show := exec.CommandContext(ctx, binary, "show", "-json", planFile)
-	show.Dir = unitDir
-	show.Env = env
+	show := toolCommand(ctx, manager, unitDir, binary, extraEnv, "show", "-json", planFile)
 	show.Stderr = log
 	out, err := show.Output()
 	if err != nil {

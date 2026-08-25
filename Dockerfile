@@ -33,6 +33,15 @@ RUN curl -fsSL -o /tmp/tenv.apk \
 # just lets them fetch whatever version a repo asks for instead of failing.
 ENV TENV_AUTO_INSTALL=true
 
+# mise, for repositories that pin their tools in mise.toml or .tool-versions
+# instead. MISE_SAFE stops a repository's own config executing code during
+# version resolution — blastdoor judges merge requests it does not trust.
+ENV MISE_DATA_DIR=/opt/mise
+ENV MISE_SAFE=1
+ENV MISE_YES=1
+ENV PATH="/usr/local/bin:${PATH}"
+RUN curl -fsSL https://mise.run | MISE_INSTALL_PATH=/usr/local/bin/mise sh
+
 COPY --from=build /out/blastdoor /usr/local/bin/blastdoor
 
 WORKDIR /work
