@@ -138,9 +138,15 @@ executing code — hooks, tasks, `[env]` injection, `exec()` in templates —
 while resolving versions. Blastdoor judges merge requests it does not trust, so
 this is on by default and should stay on.
 
-`blastdoor plan --tool` picks the binary; the default `auto` uses Terragrunt for
-a Terragrunt unit and otherwise follows the version files, defaulting to
-OpenTofu. Terragrunt wraps OpenTofu unless you pass `--terragrunt-tf-path`.
+`--tool` picks the binary; the default `auto` uses Terragrunt for a Terragrunt
+unit, and otherwise whichever of OpenTofu/Terraform the repository pins.
+
+Terragrunt drives one of the two, and blastdoor works out which from the same
+pins — the nearest `.terraform-version` or `.opentofu-version` at or above the
+unit, so a file at the repository root still governs a unit several directories
+down. For a mise project it asks mise instead. With nothing pinned it uses
+OpenTofu. Every plan logs which it chose and what decided it; override with
+`--terragrunt-tf-path`.
 
 ## GitLab
 

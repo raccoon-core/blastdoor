@@ -7,6 +7,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 )
 
 // Manager is the version manager that resolves and installs the binaries a
@@ -84,6 +85,54 @@ func onPath(binary string) bool {
 	return err == nil
 }
 
+// TerragruntTF works out which binary Terragrunt should wrap.
+//
+// Terragrunt drives OpenTofu or Terraform, and getting it wrong means planning
+// a Terraform repository with OpenTofu. The repository says which it wants —
+// through a .terraform-version / .opentofu-version file above the unit, or
+// through its mise config — so ask, rather than assuming.
+func TerragruntTF(ctx context.Context, unitDir string, manager Manager) (Tool, string) {
+	if tool, file, ok := PinnedTool(unitDir); ok {
+		return tool, file
+	}
+
+	if manager == ManagerMise {
+		if tool, ok := miseTerraformTool(ctx, unitDir); ok {
+			return tool, "mise config"
+		}
+	}
+
+	// Nothing says otherwise, so OpenTofu.
+	return ToolTofu, "default"
+}
+
+// miseTerraformTool asks mise which of the two it has been told to provide.
+// --offline keeps this from reaching the network just to answer a question.
+func miseTerraformTool(ctx context.Context, unitDir string) (Tool, bool) {
+	cmd := exec.CommandContext(ctx, "mise", "ls", "--current", "--offline")
+	cmd.Dir = unitDir
+	cmd.Env = miseEnv()
+
+	out, err := cmd.Output()
+	if err != nil {
+		return "", false
+	}
+
+	for _, line := range strings.Split(string(out), "\n") {
+		fields := strings.Fields(line)
+		if len(fields) == 0 {
+			continue
+		}
+		switch fields[0] {
+		case "opentofu", "tofu":
+			return ToolTofu, true
+		case "terraform":
+			return ToolTerraform, true
+		}
+	}
+	return "", false
+}
+
 // Prepare installs the binaries a unit needs, ahead of planning it.
 //
 // Doing this as its own step keeps a toolchain that will not install from
@@ -140,10 +189,8 @@ func prepareTenv(ctx context.Context, unitDir string, opts Options, log io.Write
 	if tool == ToolTerragrunt {
 		// Terragrunt is only half of it; the binary it wraps has to exist
 		// too, and its version comes from a different file.
-		wrapped := Tool(opts.TerragruntTFPath)
-		if wrapped == "" {
-			wrapped = ToolTofu
-		}
+		wrapped, why := resolveTerragruntTF(ctx, unitDir, opts, ManagerTenv)
+		fmt.Fprintf(log, "terragrunt will wrap %s (%s)\n", wrapped, why)
 		wanted = append(wanted, wrapped)
 	}
 
@@ -192,4 +239,13 @@ func toolCommand(ctx context.Context, manager Manager, unitDir, binary string, e
 
 	cmd.Dir = unitDir
 	return cmd
+}
+
+// resolveTerragruntTF honours an explicit --terragrunt-tf-path, and otherwise
+// works out what the repository asked for.
+func resolveTerragruntTF(ctx context.Context, unitDir string, opts Options, manager Manager) (Tool, string) {
+	if p := opts.TerragruntTFPath; p != "" && p != "auto" {
+		return Tool(p), "--terragrunt-tf-path"
+	}
+	return TerragruntTF(ctx, unitDir, manager)
 }

@@ -91,7 +91,7 @@ in each unit.`,
 	cmd.Flags().StringVar(&headRef, "head-ref", "HEAD", "git ref to diff to when detecting units")
 	cmd.Flags().StringVar(&outDir, "out-dir", ".blastdoor", "directory to write plan JSON into")
 	cmd.Flags().StringVar(&tool, "tool", "auto", "auto, tofu, terraform or terragrunt")
-	cmd.Flags().StringVar(&tgTFPath, "terragrunt-tf-path", "tofu", "binary Terragrunt wraps")
+	cmd.Flags().StringVar(&tgTFPath, "terragrunt-tf-path", "auto", "binary Terragrunt wraps: auto, tofu or terraform")
 	cmd.Flags().StringVar(&manager, "manager", "auto", "version manager: auto, tenv, mise or none")
 
 	return cmd

@@ -61,13 +61,13 @@ func Plan(ctx context.Context, unitDir string, opts Options) ([]byte, error) {
 
 	var extraEnv []string
 	if tool == ToolTerragrunt {
-		tfPath := opts.TerragruntTFPath
-		if tfPath == "" {
-			tfPath = string(ToolTofu)
-		}
+		wrapped, why := resolveTerragruntTF(ctx, unitDir, opts, manager)
+		fmt.Fprintf(log, "terragrunt wrapping %s (%s)\n", wrapped, why)
 		// TG_TF_PATH is Terragrunt v0.73+; TERRAGRUNT_TFPATH is the older
 		// name. Setting both keeps either version working.
-		extraEnv = append(extraEnv, "TG_TF_PATH="+tfPath, "TERRAGRUNT_TFPATH="+tfPath)
+		extraEnv = append(extraEnv,
+			"TG_TF_PATH="+string(wrapped),
+			"TERRAGRUNT_TFPATH="+string(wrapped))
 	}
 
 	binary := string(tool)
@@ -102,21 +102,14 @@ func Plan(ctx context.Context, unitDir string, opts Options) ([]byte, error) {
 }
 
 // Detect picks a tool for a unit: Terragrunt if it is a Terragrunt unit,
-// otherwise whichever of OpenTofu/Terraform the version files point at,
-// defaulting to OpenTofu.
+// otherwise whichever of OpenTofu/Terraform the repository pins.
 func Detect(unitDir string) (Tool, error) {
-	exists := func(name string) bool {
-		_, err := os.Stat(filepath.Join(unitDir, name))
-		return err == nil
+	if _, err := os.Stat(filepath.Join(unitDir, "terragrunt.hcl")); err == nil {
+		return ToolTerragrunt, nil
 	}
 
-	switch {
-	case exists("terragrunt.hcl"):
-		return ToolTerragrunt, nil
-	case exists(".opentofu-version"):
-		return ToolTofu, nil
-	case exists(".terraform-version"):
-		return ToolTerraform, nil
+	if pinned, _, ok := PinnedTool(unitDir); ok {
+		return pinned, nil
 	}
 
 	tf, err := filepath.Glob(filepath.Join(unitDir, "*.tf"))
@@ -124,7 +117,50 @@ func Detect(unitDir string) (Tool, error) {
 		return "", err
 	}
 	if len(tf) > 0 {
+		// Nothing pinned, so OpenTofu.
 		return ToolTofu, nil
 	}
 	return "", fmt.Errorf("%s has no terragrunt.hcl and no .tf files — not a unit", unitDir)
+}
+
+// PinnedTool reports which of OpenTofu/Terraform the repository pins for a
+// unit, and the file that says so.
+//
+// The search walks up from the unit, because that is how tenv resolves a
+// version: a .terraform-version several directories above a Terragrunt unit
+// still governs it. Looking only inside the unit would miss it and quietly
+// fall back to OpenTofu against a Terraform repository.
+//
+// The nearest file wins. A directory holding both is ambiguous, and OpenTofu
+// wins there.
+func PinnedTool(unitDir string) (tool Tool, file string, ok bool) {
+	dir, err := filepath.Abs(unitDir)
+	if err != nil {
+		return "", "", false
+	}
+
+	for {
+		for _, candidate := range []struct {
+			name string
+			tool Tool
+		}{
+			{".opentofu-version", ToolTofu},
+			{".terraform-version", ToolTerraform},
+		} {
+			path := filepath.Join(dir, candidate.name)
+			if _, err := os.Stat(path); err == nil {
+				return candidate.tool, path, true
+			}
+		}
+
+		// A repository root is as far as a unit's configuration reaches.
+		if _, err := os.Stat(filepath.Join(dir, ".git")); err == nil {
+			return "", "", false
+		}
+		parent := filepath.Dir(dir)
+		if parent == dir {
+			return "", "", false
+		}
+		dir = parent
+	}
 }

@@ -88,6 +88,18 @@ This asymmetry is intentional. Do not "simplify" them into one path.
 - Raising the gate calls `Unapprove` first, so an approval earned by an earlier
   safe push does not carry over to a worse one.
 
+### The tool is resolved from the repository, never assumed
+
+`runner.PinnedTool` walks up from the unit for `.terraform-version` /
+`.opentofu-version`, because that is how tenv resolves and the file is usually
+several directories above the unit. `runner.TerragruntTF` uses it to decide
+which binary Terragrunt wraps.
+
+Both matter: a Terragrunt unit short-circuits tool detection, so without this
+a Terraform repository gets planned with OpenTofu — quietly, since Terragrunt
+runs whatever `TG_TF_PATH` says. Do not reintroduce a hardcoded default here;
+the fallback to OpenTofu applies only when nothing is pinned anywhere.
+
 ### The base ref is resolved, never assumed
 
 `detect.ResolveBaseRef` tries `--base-ref`, then

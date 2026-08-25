@@ -77,7 +77,7 @@ is installed, otherwise tenv.`,
 	cmd.Flags().StringVar(&headRef, "head-ref", "HEAD", "git ref to diff to when detecting units")
 	cmd.Flags().StringVar(&manager, "manager", "auto", "auto, tenv, mise or none")
 	cmd.Flags().StringVar(&tool, "tool", "auto", "auto, tofu, terraform or terragrunt")
-	cmd.Flags().StringVar(&tgTFPath, "terragrunt-tf-path", "tofu", "binary Terragrunt wraps")
+	cmd.Flags().StringVar(&tgTFPath, "terragrunt-tf-path", "auto", "binary Terragrunt wraps: auto, tofu or terraform")
 
 	return cmd
 }
