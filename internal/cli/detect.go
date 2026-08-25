@@ -18,6 +18,8 @@ ancestor directory up to --root, has a changed .hcl or .tf file. Shared files
 such as component.hcl therefore pull in every unit beneath them.`,
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
+			opts.Root = pickString(cmd, "root", opts.Root, cfg().Root)
+
 			units, err := detect.Changed(opts)
 			if err != nil {
 				return err

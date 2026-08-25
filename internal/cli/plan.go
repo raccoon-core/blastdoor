@@ -36,6 +36,11 @@ neither is given. Binary versions are resolved by tenv from the version files
 in each unit.`,
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
+			root = pickString(cmd, "root", root, cfg().Root)
+			tool = pickString(cmd, "tool", tool, cfg().Tool)
+			manager = pickString(cmd, "manager", manager, cfg().Manager)
+			tgTFPath = pickString(cmd, "terragrunt-tf-path", tgTFPath, cfg().TerragruntTFPath)
+
 			resolved, err := resolveUnits(units, unitsFile, root, baseRef, headRef)
 			if err != nil {
 				return err

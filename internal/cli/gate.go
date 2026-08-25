@@ -46,6 +46,20 @@ A 401 or 403 from GitLab fails the command: a token that cannot reach the API
 must not be mistaken for a change that needs no gate.`,
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
+			ruleName = pickString(cmd, "rule-name", ruleName, cfg().RuleName)
+			autoMerge = pickBool(cmd, "auto-merge", autoMerge, cfg().AutoMerge)
+			squash = pickBool(cmd, "squash", squash, cfg().Squash)
+			// The approver list defaults from a CI variable rather than from
+			// the flag's own default, so an unset flag is not the whole test:
+			// the pipeline's statement has to outrank the repository's, since
+			// a branch naming its own approver group is a branch approving
+			// itself.
+			if !cmd.Flags().Changed("approver-group-id") &&
+				os.Getenv("BLASTDOOR_APPROVER_GROUP_IDS") == "" &&
+				cfg().ApproverGroupIDs != nil {
+				approverIDs = groupIDStrings(cfg().ApproverGroupIDs)
+			}
+
 			rep, err := readReport(reportPath)
 			if err != nil {
 				return err

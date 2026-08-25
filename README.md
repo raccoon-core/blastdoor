@@ -119,6 +119,45 @@ file changed in the unit *or in any parent directory*, matching how Terragrunt's
 `find_in_parent_folders()` shares config — so editing one `component.hcl` plans
 every environment under it.
 
+## Configuration
+
+Settings that describe a repository can live in a `.blastdoor.yml` beside it,
+rather than being repeated as flags in every job:
+
+```yaml
+root: terraform
+policy:
+  - policy
+require_coverage: true
+guard:
+  - policy
+  - .gitlab-ci.yml
+ignore:
+  - ansible
+  - "**/README.md"
+```
+
+Blastdoor reads it from the directory it runs in. There is no search upwards
+and no per-directory config: the file that judges a change must be one a
+reviewer can find. `--config` names a different file, and a file named that way
+has to exist.
+
+One rule decides every setting: **the flag if it was given, otherwise the
+config, otherwise the default.** Lists are replaced whole, never merged.
+
+Two things do not follow that rule, both on purpose:
+
+- **A config file guards itself.** Its path is added to the guard list whatever
+  the config says, so a merge request cannot quietly edit `.blastdoor.yml` to
+  excuse the tree it is changing.
+- **A key blastdoor does not understand rejects the whole file** and fails the
+  command. Carrying on would mean running with no guards and no ignore list —
+  and that is also what a config written for a newer blastdoor looks like.
+
+Because guards are an override, a pipeline that passes no `--guard-path` lets
+the repository decide what is guarded. The GitLab template always passes one;
+see [docs/hardening.md](docs/hardening.md) if you wire the commands up yourself.
+
 ## Terraform, OpenTofu, Terragrunt
 
 Which version runs is a version manager's job, and the image ships both:

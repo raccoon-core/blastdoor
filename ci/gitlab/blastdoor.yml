@@ -34,7 +34,13 @@ variables:
   # Paths that force human review when a merge request changes them, whatever
   # the verdict. Without this, a change can rewrite the policies that judge it,
   # or the pipeline that runs them, in the same commit.
-  BLASTDOOR_GUARD_PATHS: "$BLASTDOOR_POLICY_DIR .gitlab-ci.yml"
+  # .blastdoor.yml is listed here as a floor. Blastdoor guards its own config
+  # whenever it loads one, but that catches an edit, not a deletion: a config
+  # that is gone cannot ask to be guarded. Naming it here covers the deletion.
+  #
+  # Keep this variable set. Guard paths are an override, not a merge, so a
+  # pipeline that passes none hands the guard list to the branch being judged.
+  BLASTDOOR_GUARD_PATHS: ".blastdoor.yml $BLASTDOOR_POLICY_DIR .gitlab-ci.yml"
   # Paths allowed to change without any unit planning them. Everything else a
   # merge request touches that selects no unit forces a review: a file no plan
   # covers is a file no policy has read. Docs and runbooks belong here; a

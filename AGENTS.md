@@ -91,6 +91,17 @@ This asymmetry is intentional. Do not "simplify" them into one path.
 - `--policy` paths that contain no `.rego` are an error. Compiling an empty
   rule set would deny every change for want of a rule, which reads as a verdict
   on the plan rather than as the mistyped path it is.
+- `.blastdoor.yml` is read from the working directory only — no search upwards,
+  no per-directory files. The configuration is attacker-controlled, so a config
+  found by walking up would let a merge request disable the checks for the
+  subtree it is changing, in a file far less visible in a diff than
+  `.gitlab-ci.yml`. Adding discovery is not a convenience, it is a bypass.
+- Loading a config guards its own path, outside the flag/config precedence
+  rule (`cli.guardPathsFor`). Guards are an override, so a config naming none
+  would otherwise guard nothing — itself least of all.
+- An unhandled key in the config rejects the whole file and fails the command.
+  Not the key skipped, and never "carry on without the config": a run with no
+  config is a run with no guards and no ignore list.
 - `--require-coverage` forces review for changed files that select no unit
   (`detect.Uncovered`). `affectsPlan` only accepts `.hcl`, `.tf` and `.tfvars`,
   so everything else — a `topics.yaml` a unit reads, a `.terragrunt-version`

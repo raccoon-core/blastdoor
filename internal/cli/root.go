@@ -6,6 +6,7 @@ import (
 	"os"
 	"strconv"
 
+	"github.com/raccoon-core/blastdoor/internal/config"
 	"github.com/spf13/cobra"
 )
 
@@ -26,7 +27,15 @@ policy covers is never waved through.`,
 		SilenceUsage:  true,
 		SilenceErrors: true,
 		Version:       Version,
+		// One place resolves the configuration, so every subcommand sees the
+		// same one and precedence is applied in one way.
+		PersistentPreRunE: func(_ *cobra.Command, _ []string) error {
+			return loadConfig()
+		},
 	}
+
+	root.PersistentFlags().StringVar(&configPath, "config", "",
+		"config file to read (default "+config.FileName+" in the working directory, if present)")
 
 	root.AddCommand(
 		newDetectCmd(),

@@ -32,8 +32,29 @@ allow contains {"resource": rc.address, "reason": "trust me"} if {
 
 to its own policy directory passes everything. A bypass has to say "allow" in
 as many words, which is at least glaring in a diff — but it is still a bypass.
-The GitLab template guards `policy/` and `.gitlab-ci.yml` by default. **If you
-wire the commands up yourself, pass `--guard-path` or you have no gate.**
+The GitLab template guards `.blastdoor.yml`, `policy/` and `.gitlab-ci.yml` by
+default. **If you wire the commands up yourself, pass `--guard-path` or you
+have no gate.**
+
+### A pipeline that states no guards hands the list to the branch
+
+`.blastdoor.yml` can carry a `guard:` list, and guards are an override rather
+than a merge: the `--guard-path` flags win when given, and the config's list is
+used when they are not. A pipeline that passes no `--guard-path` therefore lets
+the repository being judged decide what is guarded — and the repository is the
+merge request.
+
+Two things keep this closed, and both have to hold:
+
+- The template always passes `--guard-path`, so the config's list is never the
+  one in force. Keep `BLASTDOOR_GUARD_PATHS` set.
+- Blastdoor guards its own config file whenever it loads one, whatever the
+  config says. That is outside the override rule, so a config naming no guards
+  still cannot edit itself unseen.
+
+Self-guarding catches an edit, not a deletion — a config that is gone cannot
+ask to be guarded — which is why the template names `.blastdoor.yml`
+explicitly as well.
 
 ## What blastdoor cannot enforce
 

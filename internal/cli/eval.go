@@ -70,6 +70,12 @@ Point --plan at a single file while writing policies:
 or --plan-dir at the tree 'blastdoor plan' produced, to judge a whole change.`,
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
+			root = pickString(cmd, "root", root, cfg().Root)
+			policyPaths = pickList(cmd, "policy", policyPaths, cfg().Policy)
+			ignorePaths = pickList(cmd, "ignore-path", ignorePaths, cfg().Ignore)
+			requireCoverage = pickBool(cmd, "require-coverage", requireCoverage, cfg().RequireCoverage)
+			guardPaths = guardPathsFor(cmd, guardPaths)
+
 			plans, err := collectPlans(planFiles, planDir)
 			if err != nil {
 				return err
