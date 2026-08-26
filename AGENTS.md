@@ -54,14 +54,31 @@ Keep that computation in Go. There is no "default policy" file any more, and
 adding one back would move the tool's central guarantee into something a
 policy author can switch off.
 
-### The most severe matching verdict wins
+### The most severe matching verdict wins — inside a layer
 
-`policy.Worse`. This is what makes rules safe to add: a new rule can only ever
-tighten the outcome, never loosen it, so a contributor cannot weaken the gate
-by adding to it. Deleting a rule makes a change *worse* (denied for want of a
-rule), which is the right direction.
+`policy.Worse`. Within one layer this is what makes rules safe to add: a new
+rule can only tighten that layer, never loosen it. Deleting a rule makes a
+change *worse* (denied for want of a rule), which is the right direction.
 
-Anything that lets one rule override a more severe one breaks this.
+**Across layers it does not hold, on purpose.** `policy.Evaluate` takes the
+judgement of the highest-weight layer that judged a change at all, so a local
+layer at weight 99 saying `allow` beats a company layer at weight 0 saying
+`deny`. That is what tiering means and it was asked for deliberately — do not
+"fix" it back into most-severe-wins across layers.
+
+What stops it being self-approval is not the resolution but three things
+outside it, and all three have to hold:
+
+- `.blastdoor.yml` names the layers and weights, and is self-guarded, so
+  adding a layer or moving a weight forces review of that commit.
+- The local policy directory must be in the guard list, or a repository can
+  add a permissive rule with nobody seeing it. Say so wherever layers are
+  documented.
+- The note names the deciding layer and what it overrode (`overrideNote`).
+  "This passed" and "this passed because the repository overrode the company"
+  are different facts.
+
+A change no layer judges is still denied, still computed in Go.
 
 ### `deny` fails the job; `review` does not
 
@@ -98,6 +115,18 @@ This asymmetry is intentional. Do not "simplify" them into one path.
   merged — one file per unit merges, one file per run collides. It cannot come
   from the plan JSON, which says `terraform_version` whichever tool wrote it.
   A missing `engine.txt` is silence, not an error.
+- A policy source that cannot be fetched fails the command. Evaluating with
+  the layers that happened to arrive would drop a company layer's `deny` rules
+  the moment its host was unreachable: a gate that gets more permissive when
+  the network fails is not a gate. Never fall back to a subset of layers.
+- Layers are compiled by moving each one's modules to `data.layers.<name>`
+  (`policy.compileLayer`), so a policy author still writes `package blastdoor`
+  and never has to know their file's weight.
+- Equal weights are an error. Two layers at the same weight have no order, so
+  a verdict would depend on map iteration.
+- A layer's `weight` is a `*int` in the config: `0` is a real weight — the
+  company layer usually has it — so absent has to be distinguishable from zero.
+  Defaulting it would silently put a layer at the bottom.
 - Policy variables (`variables:`) are mounted at `data.variables` via `rego.Store`, never
   merged into the data root. A variable that could reach `data.blastdoor` would
   displace the rule sets, which is the same hole `keepRego` closes from the

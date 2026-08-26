@@ -10,9 +10,10 @@ Read this before relying on the gate for anything that matters.
 
 - A change no rule matches is **denied**, decided by blastdoor from the plan
   itself rather than by a policy rule that has to fire.
-- Verdicts never weaken by addition: when several rules match one change the
-  most severe wins, so **deleting** a rule makes a change *worse* (denied, for
-  want of a rule), never better.
+- Within a layer, verdicts never weaken by addition: when several rules match
+  one change the most severe wins, so **deleting** a rule makes a change *worse*
+  (denied, for want of a rule), never better. Across layers this is deliberately
+  not true — see below.
 - A `deny` also fails the job, so approving alone does not clear it.
 - A document that is not plan JSON is an error, never a plan with nothing to judge.
 - `blastdoor plan` wipes its output directory first, so a `plan.json` committed
@@ -35,6 +36,27 @@ as many words, which is at least glaring in a diff — but it is still a bypass.
 The GitLab template guards `.blastdoor.yml`, `policy/` and `.gitlab-ci.yml` by
 default. **If you wire the commands up yourself, pass `--guard-path` or you
 have no gate.**
+
+### Layered policies let a repository override its company's rules
+
+`policies` in `.blastdoor.yml` orders policy sources by weight, and the
+highest-weight layer that judges a change decides it. A repository's own layer
+at weight 99 can `allow` what the company layer at weight 0 `deny`s.
+
+That is the point of tiering, and it means **a shared policy is only as binding
+as the guards around the layer list.** Three things have to hold together:
+
+- `.blastdoor.yml` is self-guarded, so adding a layer, or moving a weight,
+  forces a person to review that commit.
+- **The local policy directory must be in `--guard-path`.** Otherwise a merge
+  request adds a permissive local rule and nothing forces anyone to look at it.
+  This is the one that is easy to forget, and it is the whole containment.
+- The note names the deciding layer and what it overrode, so a reviewer reading
+  `pass` can see it was a repository overriding a company `deny` rather than
+  the company rules agreeing.
+
+If you need a company rule that no repository may override, blastdoor has no
+such marker today. Do not approximate it with weights.
 
 ### A pipeline that states no guards hands the list to the branch
 

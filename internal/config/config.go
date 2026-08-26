@@ -124,7 +124,10 @@ type Config struct {
 	Manager          string `yaml:"manager"`
 	TerragruntTFPath string `yaml:"terragrunt_tf_path"`
 
-	Policy          []string `yaml:"policy"`
+	// Policies are the tiers of policy this repository is judged by, keyed
+	// by the name that appears in the report. Higher weight wins.
+	Policies map[string]Source `yaml:"policies"`
+
 	RequireCoverage *bool    `yaml:"require_coverage"`
 	Guard           []string `yaml:"guard"`
 	Ignore          []string `yaml:"ignore"`
@@ -144,6 +147,42 @@ type Config struct {
 	// Callers guard it: a config that can rewrite the rules judging a change
 	// has to be looked at by a person when it changes.
 	Path string `yaml:"-"`
+}
+
+// Source is where one layer of policy comes from.
+type Source struct {
+	// Repository is a git URL to clone, or "." for the working tree.
+	Repository string `yaml:"repository"`
+	// Ref is the branch, tag or commit to check out. Ignored for ".".
+	Ref string `yaml:"ref"`
+	// Directory is the path within the source holding the .rego files.
+	Directory string `yaml:"directory"`
+	// Weight orders the layers, highest first. A pointer because 0 is a
+	// real weight — the company layer usually has it — so absent has to be
+	// distinguishable from zero.
+	Weight *int `yaml:"weight"`
+}
+
+// Local reports whether this source is the working tree rather than a clone.
+func (s Source) Local() bool {
+	return s.Repository == "" || s.Repository == "."
+}
+
+// Validate checks the layer definitions blastdoor cannot make sense of later.
+//
+// A weight that was left out is the interesting one: defaulting it to zero
+// would silently put a layer at the bottom, which for a local layer means the
+// company rules quietly override it — the opposite of what was meant.
+func (c *Config) Validate() error {
+	for name, src := range c.Policies {
+		if src.Weight == nil {
+			return fmt.Errorf("policy layer %q has no weight: weights order the layers, and the highest wins", name)
+		}
+		if !src.Local() && src.Ref == "" {
+			return fmt.Errorf("policy layer %q has no ref: name the branch, tag or commit to read %s at", name, src.Repository)
+		}
+	}
+	return nil
 }
 
 // Find returns the config path to load, or "" when there is none.
@@ -200,5 +239,8 @@ func Load(path string) (*Config, error) {
 	}
 
 	cfg.Path = path
+	if err := cfg.Validate(); err != nil {
+		return nil, fmt.Errorf("reading config %s: %w", path, err)
+	}
 	return &cfg, nil
 }

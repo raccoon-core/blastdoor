@@ -46,6 +46,9 @@ variables:
   # covers is a file no policy has read. Docs and runbooks belong here; a
   # values file a unit reads does not.
   BLASTDOOR_IGNORE_PATHS: ""
+  # Where remote policy layers are checked out, when .blastdoor.yml names any.
+  # Under the workspace so this job can cache it; add it to .gitignore.
+  BLASTDOOR_POLICY_CACHE: .blastdoor-policies
 
 .blastdoor:rules:
   # Run on merge request pipelines, and on branch pipelines that no merge
@@ -80,6 +83,11 @@ blastdoor:plan:
 blastdoor:eval:
   stage: risk
   image: $BLASTDOOR_IMAGE
+  # Policy layers are fetched per run; cache the checkouts between pipelines.
+  cache:
+    key: blastdoor-policies-v1
+    paths:
+      - $BLASTDOOR_POLICY_CACHE
   needs:
     - job: blastdoor:plan
       artifacts: true

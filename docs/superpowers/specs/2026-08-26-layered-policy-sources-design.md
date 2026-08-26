@@ -79,9 +79,15 @@ Rules:
 - **Weights must be unique.** Two layers at the same weight have no defined
   order between them, and silently picking one would make a verdict depend on
   map iteration. Duplicate weights are an error naming both layers.
-- **`policies` and `policy` are mutually exclusive.** The flat `--policy` list
-  stays for a single-tier repository and for `eval --plan` while writing a
-  rule. Accepting both would leave two answers to "what judged this".
+- **`policies` is the only way to name policies in the config.** The flat
+  `policy` key is removed: two ways to say the same thing would leave two
+  answers to "what judged this", and a repository with one tier writes one
+  layer. Because an unknown key rejects the file, a config still saying
+  `policy:` fails by name rather than being quietly ignored.
+- **The `--policy` flag stays**, for `eval --plan` while writing a rule and for
+  the one-line docker run. When given it replaces the layer set with a single
+  unnamed layer, under the same rule as every other flag: the flag if it was
+  given, otherwise the config.
 - A layer whose `directory` holds no `.rego` is an error, as a `--policy` path
   with no `.rego` already is.
 
@@ -187,7 +193,7 @@ weight — and each change records which layer decided it.
 
 | Area | Change |
 |---|---|
-| `internal/config` | `policies` map; validation for unique weights and exclusivity with `policy` |
+| `internal/config` | `policies` map, replacing the `policy` key; validation for unique weights |
 | `internal/fetch` (new) | Clone at ref into a cache, return a directory and a resolved sha |
 | `internal/policy` | Per-layer package rewriting, per-layer queries, weighted resolution |
 | `internal/report` | Layer provenance in the summary and in `report.json` |
@@ -201,12 +207,30 @@ weight — and each change records which layer decided it.
 - Within one layer, most-severe still wins.
 - A change no layer judges is still denied.
 - Duplicate weights are an error naming both layers.
-- `policies` together with `policy` is an error.
+- A config still using the removed `policy` key fails, naming it.
+- `--policy` replaces the layer set entirely.
 - A source that cannot be fetched fails the command, and does **not** evaluate
   with the remaining layers.
 - Variables merge per key across layers, highest weight winning each key.
 - Resolved shas reach `report.json`.
 - `repository: .` is read in place and never fetched.
+
+## Migration
+
+The `policy` key is removed rather than deprecated. A repository using it moves
+to a one-layer `policies` map:
+
+```yaml
+policies:
+  local:
+    repository: .
+    directory: policy
+    weight: 0
+```
+
+Nothing silently changes behaviour: the strict-key check rejects the old key
+and names it, so the failure is a message rather than a policy set that turned
+out to be empty.
 
 ## Open questions
 

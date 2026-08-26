@@ -31,9 +31,34 @@ type Report struct {
 	Guarded []string `json:"guarded,omitempty"`
 	// Uncovered lists changed files that no plan accounts for.
 	Uncovered []string `json:"uncovered,omitempty"`
+	// Layers records the policy tiers that judged this run, highest weight
+	// first, with the commit each resolved to. A ref like "main" moves, so
+	// without the commit a verdict cannot be explained afterwards.
+	Layers []Layer `json:"layers,omitempty"`
 	// Engines names what produced the plans — terraform, tofu, or both while
 	// a repository is moving between them. Empty when nothing recorded it.
 	Engines []string `json:"engines,omitempty"`
+}
+
+// Layer is one policy tier and where it came from.
+type Layer struct {
+	Name       string `json:"name"`
+	Repository string `json:"repository,omitempty"`
+	Ref        string `json:"ref,omitempty"`
+	Commit     string `json:"commit,omitempty"`
+	Weight     int    `json:"weight"`
+}
+
+// overrideNote says which lower layers were overruled, and to what.
+func overrideNote(c policy.Change) string {
+	if len(c.Overridden) == 0 {
+		return ""
+	}
+	parts := make([]string, 0, len(c.Overridden))
+	for _, o := range c.Overridden {
+		parts = append(parts, fmt.Sprintf("%s said %s", o.Layer, o.Verdict))
+	}
+	return fmt.Sprintf("(%s overrides: %s)", c.Layer, strings.Join(parts, ", "))
 }
 
 // engineNames are the products behind the binary names.
@@ -180,6 +205,10 @@ func (r Report) WriteMarkdown(w io.Writer) error {
 		}
 	}
 
+	if line := r.layerLine(); line != "" {
+		b.WriteString("\n" + line + "\n")
+	}
+
 	if len(r.Uncovered) > 0 {
 		b.WriteString("\nThis change edits files that no plan covers, so what they do has not been judged:\n\n")
 		for _, p := range r.Uncovered {
@@ -211,17 +240,43 @@ func (r Report) WriteMarkdown(w io.Writer) error {
 	b.WriteString("\n| Verdict | Unit | Change | Why |\n|---|---|---|---|\n")
 	for _, u := range r.Units {
 		for _, c := range u.Changes {
+			why := strings.Join(c.Reasons, "; ")
+			// "This passed" and "this passed because the repository overrode
+			// the company rule" are different facts, and the reviewer needs
+			// the second one. Without it an override is effective but
+			// invisible.
+			if note := overrideNote(c); note != "" {
+				why += " " + note
+			}
 			b.WriteString(fmt.Sprintf("| %s | %s | `%s` (%s) | %s |\n",
 				marker(c.Verdict),
 				escapePipes(u.Path),
 				escapePipes(c.Address),
 				escapePipes(strings.Join(c.Actions, "+")),
-				escapePipes(strings.Join(c.Reasons, "; "))))
+				escapePipes(why)))
 		}
 	}
 
 	_, err := io.WriteString(w, b.String())
 	return err
+}
+
+// layerLine names the tiers that judged the run, so a reader knows what the
+// verdict was measured against without opening the config.
+func (r Report) layerLine() string {
+	if len(r.Layers) < 2 {
+		// One layer is the ordinary case and needs no explaining.
+		return ""
+	}
+	parts := make([]string, 0, len(r.Layers))
+	for _, l := range r.Layers {
+		if l.Commit != "" {
+			parts = append(parts, fmt.Sprintf("%s (%s@%.7s)", l.Name, l.Ref, l.Commit))
+			continue
+		}
+		parts = append(parts, l.Name)
+	}
+	return "Judged by: " + strings.Join(parts, ", ") + " — highest weight first."
 }
 
 func (r Report) headline() string {

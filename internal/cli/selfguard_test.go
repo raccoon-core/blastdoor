@@ -41,7 +41,7 @@ allow contains {"resource": rc.address, "reason": "fine"} if {
 // guarded implicitly, and a guard is a statement about a merge request — with
 // no diff there is no merge request, nothing to gate, and nothing to guard.
 func TestSelfGuardAloneDoesNotRequireADiff(t *testing.T) {
-	t.Chdir(authoringDir(t, "policy:\n  - policy\nvariables:\n  max_partitions: 32\n"))
+	t.Chdir(authoringDir(t, "policies:\n  local:\n    repository: .\n    directory: policy\n    weight: 0\nvariables:\n  max_partitions: 32\n"))
 	configPath = ""
 	prev := loaded
 	t.Cleanup(func() { loaded = prev })
@@ -55,7 +55,7 @@ func TestSelfGuardAloneDoesNotRequireADiff(t *testing.T) {
 // wanted a guarantee blastdoor cannot give, so it says so rather than
 // reporting a verdict that skipped the check.
 func TestExplicitGuardStillRequiresADiff(t *testing.T) {
-	t.Chdir(authoringDir(t, "policy:\n  - policy\n"))
+	t.Chdir(authoringDir(t, "policies:\n  local:\n    repository: .\n    directory: policy\n    weight: 0\n"))
 	configPath = ""
 	prev := loaded
 	t.Cleanup(func() { loaded = prev })
@@ -72,7 +72,7 @@ func TestExplicitGuardStillRequiresADiff(t *testing.T) {
 // A guard list in the config is just as explicit as the flag: someone wrote
 // it down, so failing to check it is still an error.
 func TestGuardFromConfigStillRequiresADiff(t *testing.T) {
-	t.Chdir(authoringDir(t, "policy:\n  - policy\nguard:\n  - policy\n"))
+	t.Chdir(authoringDir(t, "policies:\n  local:\n    repository: .\n    directory: policy\n    weight: 0\nguard:\n  - policy\n"))
 	configPath = ""
 	prev := loaded
 	t.Cleanup(func() { loaded = prev })

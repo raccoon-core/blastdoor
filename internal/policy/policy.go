@@ -17,6 +17,8 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/open-policy-agent/opa/v1/ast"
+	"github.com/open-policy-agent/opa/v1/loader"
 	"github.com/open-policy-agent/opa/v1/rego"
 	"github.com/open-policy-agent/opa/v1/storage"
 	"github.com/open-policy-agent/opa/v1/storage/inmem"
@@ -74,6 +76,33 @@ type Change struct {
 	Verdict Verdict  `json:"verdict"`
 	// Reasons holds every matching rule's explanation, most severe first.
 	Reasons []string `json:"reasons,omitempty"`
+	// Layer is the layer whose judgement decided this change: the
+	// highest-weight one that judged it at all. Empty when none did.
+	Layer string `json:"layer,omitempty"`
+	// Overridden is what the layers below the deciding one said. They did
+	// not decide, but a repository overriding its company's rules has to be
+	// auditable rather than merely effective.
+	Overridden []Judgement `json:"overridden,omitempty"`
+}
+
+// Judgement is one layer's answer about one change.
+type Judgement struct {
+	Layer   string   `json:"layer"`
+	Verdict Verdict  `json:"verdict"`
+	Reasons []string `json:"reasons,omitempty"`
+}
+
+// Layer is one source of policies, with the weight that orders it.
+//
+// Layers let an organisation tier its rules: a company layer everything is
+// judged by, a domain layer refining it, a repository with the last word. The
+// highest-weight layer that judges a change decides it — which means a layer
+// can loosen a lower one, deliberately. See docs/hardening.md.
+type Layer struct {
+	Name   string
+	Weight int
+	// Paths are directories or .rego files on disk holding this layer.
+	Paths []string
 }
 
 // Result is the verdict for a whole plan.
@@ -142,7 +171,10 @@ func ValidatePlan(plan any) error {
 
 // Options configures an Evaluator.
 type Options struct {
-	// PolicyPaths are directories or .rego files to load.
+	// Layers are the tiers of policy, ordered by weight. When empty,
+	// PolicyPaths is used as a single unnamed layer.
+	Layers []Layer
+	// PolicyPaths are directories or .rego files to load as one layer.
 	PolicyPaths []string
 	// Vars are values a repository sets for the policies to read, reachable
 	// as data.variables. They let a shared rule carry a default that a repository
@@ -163,6 +195,15 @@ const VarsRoot = "variables"
 
 // Evaluator holds a compiled set of policies, ready to judge many plans.
 type Evaluator struct {
+	// layers are ordered by descending weight: the first to judge a change
+	// decides it.
+	layers []compiledLayer
+}
+
+// compiledLayer is one layer's three prepared queries.
+type compiledLayer struct {
+	name    string
+	weight  int
 	queries map[Verdict]rego.PreparedEvalQuery
 }
 
@@ -218,40 +259,117 @@ func countRego(paths []string) (int, error) {
 
 // New compiles the policies described by opts.
 func New(ctx context.Context, opts Options) (*Evaluator, error) {
-	e := &Evaluator{queries: map[Verdict]rego.PreparedEvalQuery{}}
-
-	// Policy paths that hold no policies are a mistake — a mistyped path, a
-	// subdirectory that moved. Saying so beats letting it surface as every
-	// change denied for want of a rule, which reads like a verdict.
-	if len(opts.PolicyPaths) > 0 {
-		found, err := countRego(opts.PolicyPaths)
-		if err != nil {
-			return nil, err
+	layers := opts.Layers
+	if len(layers) == 0 {
+		if len(opts.PolicyPaths) == 0 {
+			// No policies at all: every change is unjudged, which Evaluate
+			// denies on its own.
+			return &Evaluator{}, nil
 		}
-		if found == 0 {
-			return nil, fmt.Errorf("no .rego files found under %s", strings.Join(opts.PolicyPaths, ", "))
-		}
+		layers = []Layer{{Name: "policy", Paths: opts.PolicyPaths}}
 	}
 
-	// One store for all three queries, holding the repository's variables.
+	if err := checkWeights(layers); err != nil {
+		return nil, err
+	}
+
+	// One store for all layers, holding the repository's variables.
 	var store storage.Store
 	if len(opts.Vars) > 0 {
 		store = inmem.NewFromObject(map[string]any{VarsRoot: opts.Vars})
 	}
 
-	for verdict, query := range Queries {
-		args := []func(*rego.Rego){rego.Query(query)}
-		if len(opts.PolicyPaths) > 0 {
-			args = append(args, rego.Load(opts.PolicyPaths, keepRego))
+	// Highest weight first: Evaluate takes the first layer that judged a
+	// change, so the order here is the override order.
+	ordered := append([]Layer{}, layers...)
+	sort.Slice(ordered, func(i, j int) bool { return ordered[i].Weight > ordered[j].Weight })
+
+	e := &Evaluator{}
+	for _, layer := range ordered {
+		compiled, err := compileLayer(ctx, layer, store)
+		if err != nil {
+			return nil, err
+		}
+		e.layers = append(e.layers, compiled)
+	}
+	return e, nil
+}
+
+// checkWeights refuses two layers that cannot be ordered.
+//
+// Equal weights leave no answer to which one overrides the other, and picking
+// one would make a verdict depend on the order a map was walked in.
+func checkWeights(layers []Layer) error {
+	seen := map[int]string{}
+	for _, layer := range layers {
+		if other, clash := seen[layer.Weight]; clash {
+			return fmt.Errorf("policy layers %q and %q both have weight %d, so neither can override the other: give them different weights",
+				other, layer.Name, layer.Weight)
+		}
+		seen[layer.Weight] = layer.Name
+	}
+	return nil
+}
+
+// compileLayer prepares one layer's three queries.
+//
+// A layer's modules are written as `package blastdoor`, whichever tier they
+// come from — an author should not have to know their file's weight. They are
+// moved to data.layers.<name> here so each layer can be asked on its own,
+// which is what makes one able to override another.
+func compileLayer(ctx context.Context, layer Layer, store storage.Store) (compiledLayer, error) {
+	found, err := countRego(layer.Paths)
+	if err != nil {
+		return compiledLayer{}, fmt.Errorf("policy layer %q: %w", layer.Name, err)
+	}
+	if found == 0 {
+		return compiledLayer{}, fmt.Errorf("policy layer %q: no .rego files found under %s", layer.Name, strings.Join(layer.Paths, ", "))
+	}
+
+	modules, err := loadModules(layer)
+	if err != nil {
+		return compiledLayer{}, err
+	}
+
+	out := compiledLayer{name: layer.Name, weight: layer.Weight, queries: map[Verdict]rego.PreparedEvalQuery{}}
+	for verdict := range Queries {
+		args := []func(*rego.Rego){rego.Query(layerQuery(layer.Name, verdict))}
+		for _, mod := range modules {
+			args = append(args, rego.ParsedModule(mod))
 		}
 
 		prepared, err := prepare(ctx, store, args)
 		if err != nil {
-			return nil, fmt.Errorf("compiling policies for %s: %w", query, err)
+			return compiledLayer{}, fmt.Errorf("compiling policy layer %q: %w", layer.Name, err)
 		}
-		e.queries[verdict] = prepared
+		out.queries[verdict] = prepared
 	}
-	return e, nil
+	return out, nil
+}
+
+// layerQuery is where a layer's rule set lives once it has been moved.
+func layerQuery(name string, verdict Verdict) string {
+	return "data.layers." + ast.VarTerm(name).String() + "." + strings.TrimPrefix(Queries[verdict], "data.blastdoor.")
+}
+
+// loadModules parses a layer's .rego and moves it into the layer's package.
+func loadModules(layer Layer) ([]*ast.Module, error) {
+	loaded, err := loader.NewFileLoader().Filtered(layer.Paths, keepRego)
+	if err != nil {
+		return nil, fmt.Errorf("reading policy layer %q: %w", layer.Name, err)
+	}
+
+	pkg, err := ast.ParseRef("data.layers." + ast.VarTerm(layer.Name).String())
+	if err != nil {
+		return nil, fmt.Errorf("policy layer %q is not a usable name: %w", layer.Name, err)
+	}
+
+	out := make([]*ast.Module, 0, len(loaded.Modules))
+	for _, mod := range loaded.Modules {
+		mod.Parsed.Package.Path = pkg
+		out = append(out, mod.Parsed)
+	}
+	return out, nil
 }
 
 // prepare compiles one query, against the variables store when there is one.
@@ -287,20 +405,22 @@ func prepare(ctx context.Context, store storage.Store, args []func(*rego.Rego)) 
 // itself, rather than by a policy rule that has to fire — a rule that does not
 // run must not be the difference between a change being judged and being waved
 // through.
+//
+// With more than one layer, the highest-weight layer that judged a change at
+// all decides it, and the layers below are recorded but do not contribute.
+// That lets a repository loosen its company's rules, deliberately: see
+// docs/hardening.md for what stands in the way of that becoming
+// self-approval.
 func (e *Evaluator) Evaluate(ctx context.Context, plan any) (Result, error) {
-	// Gather each rule set's judgements, keyed by resource address.
-	matched := map[string]map[Verdict][]string{}
-	for verdict := range Queries {
-		judgements, err := e.judgements(ctx, verdict, plan)
+	// What each layer said, by resource address. Layers are in descending
+	// weight order already.
+	byLayer := make([]map[string]Judgement, len(e.layers))
+	for i, layer := range e.layers {
+		judged, err := e.layerJudgements(ctx, layer, plan)
 		if err != nil {
 			return Result{}, err
 		}
-		for address, reasons := range judgements {
-			if matched[address] == nil {
-				matched[address] = map[Verdict][]string{}
-			}
-			matched[address][verdict] = append(matched[address][verdict], reasons...)
-		}
+		byLayer[i] = judged
 	}
 
 	var changes []Change
@@ -319,18 +439,28 @@ func (e *Evaluator) Evaluate(ctx context.Context, plan any) (Result, error) {
 			Verdict: Deny,
 		}
 
-		byVerdict, judged := matched[address]
-		if !judged || len(byVerdict) == 0 {
+		decided := false
+		for i, judged := range byLayer {
+			j, ok := judged[address]
+			if !ok {
+				// Silence is not consent: it falls through to the layer
+				// below, which is what lets a tier add rules without
+				// restating the ones beneath it.
+				continue
+			}
+			if !decided {
+				change.Verdict = j.Verdict
+				change.Reasons = j.Reasons
+				change.Layer = e.layers[i].name
+				decided = true
+				continue
+			}
+			change.Overridden = append(change.Overridden, j)
+		}
+
+		if !decided {
 			// Nothing matched it, so nobody has decided what it is.
 			change.Reasons = []string{ReasonUnjudged}
-		} else {
-			// The most severe matching rule wins, so adding a rule can only
-			// ever make a change stricter, never weaker.
-			change.Verdict = Pass
-			for verdict := range byVerdict {
-				change.Verdict = Worse(change.Verdict, verdict)
-			}
-			change.Reasons = orderedReasons(byVerdict)
 		}
 
 		overall = Worse(overall, change.Verdict)
@@ -347,9 +477,43 @@ func (e *Evaluator) Evaluate(ctx context.Context, plan any) (Result, error) {
 	return Result{Verdict: overall, Changes: changes}, nil
 }
 
+// layerJudgements asks one layer about every change, folding its three rule
+// sets into one answer per address.
+//
+// Within a layer the most severe rule still wins, so adding a rule to a layer
+// can only ever make that layer stricter. Only the layer boundary overrides.
+func (e *Evaluator) layerJudgements(ctx context.Context, layer compiledLayer, plan any) (map[string]Judgement, error) {
+	matched := map[string]map[Verdict][]string{}
+	for verdict := range Queries {
+		judgements, err := e.judgements(ctx, layer, verdict, plan)
+		if err != nil {
+			return nil, err
+		}
+		for address, reasons := range judgements {
+			if matched[address] == nil {
+				matched[address] = map[Verdict][]string{}
+			}
+			matched[address][verdict] = append(matched[address][verdict], reasons...)
+		}
+	}
+
+	out := make(map[string]Judgement, len(matched))
+	for address, byVerdict := range matched {
+		if len(byVerdict) == 0 {
+			continue
+		}
+		verdict := Pass
+		for v := range byVerdict {
+			verdict = Worse(verdict, v)
+		}
+		out[address] = Judgement{Layer: layer.name, Verdict: verdict, Reasons: orderedReasons(byVerdict)}
+	}
+	return out, nil
+}
+
 // judgements evaluates one rule set, returning reasons by resource address.
-func (e *Evaluator) judgements(ctx context.Context, verdict Verdict, plan any) (map[string][]string, error) {
-	rs, err := e.queries[verdict].Eval(ctx, rego.EvalInput(plan))
+func (e *Evaluator) judgements(ctx context.Context, layer compiledLayer, verdict Verdict, plan any) (map[string][]string, error) {
+	rs, err := layer.queries[verdict].Eval(ctx, rego.EvalInput(plan))
 	if err != nil {
 		return nil, fmt.Errorf("evaluating %s: %w", Queries[verdict], err)
 	}

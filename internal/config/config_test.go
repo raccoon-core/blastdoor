@@ -23,9 +23,16 @@ root: terraform
 tool: terragrunt
 manager: tenv
 terragrunt_tf_path: tofu
-policy:
-  - policy
-  - .policy-common
+policies:
+  company:
+    repository: https://git.example.com/policies
+    ref: v1
+    directory: rules
+    weight: 0
+  local:
+    repository: .
+    directory: policy
+    weight: 99
 require_coverage: true
 guard:
   - policy
@@ -47,8 +54,20 @@ squash: false
 	if got.Root != "terraform" || got.Tool != "terragrunt" || got.Manager != "tenv" || got.TerragruntTFPath != "tofu" {
 		t.Errorf("scalars: %+v", got)
 	}
-	if !reflect.DeepEqual(got.Policy, []string{"policy", ".policy-common"}) {
-		t.Errorf("policy = %v", got.Policy)
+	if len(got.Policies) != 2 {
+		t.Fatalf("policies = %+v, want two layers", got.Policies)
+	}
+	company := got.Policies["company"]
+	if company.Repository != "https://git.example.com/policies" || company.Ref != "v1" || company.Directory != "rules" {
+		t.Errorf("company layer = %+v", company)
+	}
+	// Weight is a pointer because 0 is a real weight, and the company layer
+	// is exactly the one that has it.
+	if company.Weight == nil || *company.Weight != 0 {
+		t.Errorf("company weight = %v, want 0", company.Weight)
+	}
+	if !got.Policies["local"].Local() {
+		t.Error(`repository "." should read the working tree`)
 	}
 	if !reflect.DeepEqual(got.Guard, []string{"policy", ".gitlab-ci.yml"}) {
 		t.Errorf("guard = %v", got.Guard)
@@ -173,5 +192,41 @@ func TestFindDoesNotSearchUpwards(t *testing.T) {
 	}
 	if got != "" {
 		t.Errorf("got %q, want no path: discovery must not walk up", got)
+	}
+}
+
+// A weight left out would default to zero, which for a local layer means the
+// company rules quietly override it — the opposite of what was meant.
+func TestLoadRejectsALayerWithNoWeight(t *testing.T) {
+	_, err := Load(write(t, "policies:\n  local:\n    repository: .\n    directory: policy\n"))
+	if err == nil {
+		t.Fatal("want an error for a layer with no weight")
+	}
+	if !strings.Contains(err.Error(), "local") || !strings.Contains(err.Error(), "weight") {
+		t.Errorf("error should name the layer and the missing weight, got: %v", err)
+	}
+}
+
+// A remote source with no ref has no defined content: "whatever HEAD is
+// today" cannot be reproduced or explained.
+func TestLoadRejectsARemoteLayerWithNoRef(t *testing.T) {
+	_, err := Load(write(t, "policies:\n  company:\n    repository: https://git.example.com/p\n    weight: 0\n"))
+	if err == nil {
+		t.Fatal("want an error for a remote layer with no ref")
+	}
+	if !strings.Contains(err.Error(), "ref") {
+		t.Errorf("error should name the missing ref, got: %v", err)
+	}
+}
+
+// The removed key fails by name rather than being quietly ignored, which is
+// what makes the migration a message instead of an empty policy set.
+func TestLoadRejectsTheRemovedPolicyKey(t *testing.T) {
+	_, err := Load(write(t, "policy:\n  - policy\n"))
+	if err == nil {
+		t.Fatal("want an error for the removed policy key")
+	}
+	if !strings.Contains(err.Error(), `unknown key "policy"`) {
+		t.Errorf("error should name the key, got: %v", err)
 	}
 }

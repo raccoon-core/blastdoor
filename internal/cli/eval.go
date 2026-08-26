@@ -71,7 +71,7 @@ or --plan-dir at the tree 'blastdoor plan' produced, to judge a whole change.`,
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			root = pickString(cmd, "root", root, cfg().Root)
-			policyPaths = pickList(cmd, "policy", policyPaths, cfg().Policy)
+
 			ignorePaths = pickList(cmd, "ignore-path", ignorePaths, cfg().Ignore)
 			requireCoverage = pickBool(cmd, "require-coverage", requireCoverage, cfg().RequireCoverage)
 			guardPaths, guardsStated := guardPathsFor(cmd, guardPaths)
@@ -87,7 +87,21 @@ or --plan-dir at the tree 'blastdoor plan' produced, to judge a whole change.`,
 				return fmt.Errorf("no plan JSON to score: pass --plan or --plan-dir")
 			}
 
+			// --policy replaces the layer set with one unnamed layer, under
+			// the same rule as every other flag: the flag if it was given,
+			// otherwise the config.
+			var layers []policy.Layer
+			var provenance []report.Layer
+			if !cmd.Flags().Changed("policy") && len(cfg().Policies) > 0 {
+				var err error
+				layers, provenance, err = resolveLayers(cmd.Context(), cfg().Policies, os.Stderr)
+				if err != nil {
+					return err
+				}
+			}
+
 			evaluator, err := policy.New(cmd.Context(), policy.Options{
+				Layers:      layers,
 				PolicyPaths: policyPaths,
 				Vars:        cfg().Vars,
 			})
@@ -120,6 +134,7 @@ or --plan-dir at the tree 'blastdoor plan' produced, to judge a whole change.`,
 
 			rep := report.Build(units)
 			rep.Engines = enginesFor(plans)
+			rep.Layers = provenance
 
 			// A change that edits its own policies or pipeline cannot be
 			// judged by them, so hand it to a person whatever it scored.
