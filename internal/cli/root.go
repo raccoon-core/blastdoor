@@ -34,8 +34,11 @@ policy covers is never waved through.`,
 		},
 	}
 
-	root.PersistentFlags().StringVar(&configPath, "config", "",
-		"config file to read (default "+config.FileName+" in the working directory, if present)")
+	// BLASTDOOR_CONFIG for a job that cannot choose its working directory.
+	// Naming a config that is not there is an error either way: asking for
+	// one and silently getting none would run with no guards.
+	root.PersistentFlags().StringVar(&configPath, "config", envOr("BLASTDOOR_CONFIG", ""),
+		"config file to read (env: BLASTDOOR_CONFIG; default "+config.FileName+" in the working directory, if present)")
 
 	root.AddCommand(
 		newDetectCmd(),

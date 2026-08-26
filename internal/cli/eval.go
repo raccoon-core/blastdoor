@@ -104,7 +104,13 @@ or --plan-dir at the tree 'blastdoor plan' produced, to judge a whole change.`,
 			// the note should always be able to say what judged the change.
 			if len(provenance) == 0 {
 				for _, path := range policyPaths {
-					provenance = append(provenance, report.Layer{Name: path})
+					// Named by its path, and marked local: it is a directory
+					// in the working tree, not a repository root.
+					provenance = append(provenance, report.Layer{
+						Name:       path,
+						Repository: ".",
+						Directory:  path,
+					})
 				}
 			}
 

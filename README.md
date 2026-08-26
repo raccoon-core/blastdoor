@@ -145,8 +145,12 @@ variables:
 
 Blastdoor reads it from the directory it runs in. There is no search upwards
 and no per-directory config: the file that judges a change must be one a
-reviewer can find. `--config` names a different file, and a file named that way
-has to exist.
+reviewer can find.
+
+`--config` names a different file, or `BLASTDOOR_CONFIG` does for a job that
+cannot choose its working directory; the flag wins over the variable. A config
+named either way has to exist — asking for one and silently getting none would
+run with no guards and no ignore list.
 
 One rule decides every setting: **the flag if it was given, otherwise the
 config, otherwise the default.** Lists are replaced whole, never merged.
