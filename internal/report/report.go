@@ -44,6 +44,7 @@ type Report struct {
 type Layer struct {
 	Name       string `json:"name"`
 	Repository string `json:"repository,omitempty"`
+	Directory  string `json:"directory,omitempty"`
 	Ref        string `json:"ref,omitempty"`
 	Commit     string `json:"commit,omitempty"`
 	Weight     int    `json:"weight"`
@@ -198,12 +199,6 @@ func (r Report) WriteMarkdown(w io.Writer) error {
 	b.WriteString(r.heading())
 	b.WriteString(r.headline())
 
-	// Directly under the verdict: what judged it is context for every line
-	// that follows, not a footnote to them.
-	if line := r.layerLine(); line != "" {
-		b.WriteString("\n" + line + "\n")
-	}
-
 	if len(r.Guarded) > 0 {
 		b.WriteString("\nThis change also edits the rules that judge it, so a person has to look regardless:\n\n")
 		for _, p := range r.Guarded {
@@ -218,27 +213,37 @@ func (r Report) WriteMarkdown(w io.Writer) error {
 		}
 	}
 
+	switch {
 	// Zero units is also what a misconfigured root or a failed detection
 	// looks like, so say it rather than letting it read as approval.
-	if r.UnitCount == 0 {
+	case r.UnitCount == 0:
 		b.WriteString("\nNo units were scored, so nothing here has been checked.\n")
-		_, err := io.WriteString(w, b.String())
-		return err
+	case !r.hasChanges():
+		b.WriteString(fmt.Sprintf("\nNo changes across %d unit(s).\n", r.UnitCount))
+	default:
+		b.WriteString(r.verdictTable())
 	}
 
-	hasChanges := false
+	// Last, deliberately. Which policies judged the change is what a reader
+	// goes looking for after reading the verdict, not before — it answers a
+	// question rather than delaying one.
+	b.WriteString(r.layerBlock())
+
+	_, err := io.WriteString(w, b.String())
+	return err
+}
+
+func (r Report) hasChanges() bool {
 	for _, u := range r.Units {
 		if len(u.Changes) > 0 {
-			hasChanges = true
-			break
+			return true
 		}
 	}
-	if !hasChanges {
-		b.WriteString(fmt.Sprintf("\nNo changes across %d unit(s).\n", r.UnitCount))
-		_, err := io.WriteString(w, b.String())
-		return err
-	}
+	return false
+}
 
+func (r Report) verdictTable() string {
+	var b strings.Builder
 	b.WriteString("\n| Verdict | Unit | Change | Why |\n|---|---|---|---|\n")
 	for _, u := range r.Units {
 		for _, c := range u.Changes {
@@ -258,35 +263,45 @@ func (r Report) WriteMarkdown(w io.Writer) error {
 				escapePipes(why)))
 		}
 	}
-
-	_, err := io.WriteString(w, b.String())
-	return err
+	return b.String()
 }
 
-// layerLine names the tiers that judged the run, so a reader knows what the
-// verdict was measured against without opening the config.
-func (r Report) layerLine() string {
+// layerBlock lists the policies that judged this run.
+//
+// The repository and directory are spelled out rather than just the layer's
+// name: the name is chosen by whoever wrote the config, and a reader asking
+// "what judged this?" needs to know where to go and read it. A ref moves, so
+// the commit it resolved to is what makes the answer good later.
+func (r Report) layerBlock() string {
 	if len(r.Layers) == 0 {
 		return ""
 	}
 
-	parts := make([]string, 0, len(r.Layers))
-	for _, l := range r.Layers {
-		// A ref moves, so the commit it resolved to is what makes a verdict
-		// explainable after the fact.
-		if l.Commit != "" {
-			parts = append(parts, fmt.Sprintf("%s (%s@%.7s)", l.Name, l.Ref, l.Commit))
-			continue
-		}
-		parts = append(parts, l.Name)
+	var b strings.Builder
+	if len(r.Layers) > 1 {
+		b.WriteString("\n<sub>Judged by, highest weight first:</sub>\n\n")
+	} else {
+		b.WriteString("\n<sub>Judged by:</sub>\n\n")
 	}
 
-	line := "Judged by: " + strings.Join(parts, ", ")
-	if len(parts) > 1 {
-		// Only worth explaining when there is an order to explain.
-		line += " — highest weight first"
+	for _, l := range r.Layers {
+		b.WriteString("<sub>- " + l.describe() + "</sub>\n")
 	}
-	return line + "."
+	return b.String()
+}
+
+// describe says where one layer came from, in one line.
+func (l Layer) describe() string {
+	where := "`" + escapePipes(l.Directory) + "`"
+	if l.Directory == "" {
+		where = "the repository root"
+	}
+
+	if l.Repository == "" || l.Repository == "." {
+		return fmt.Sprintf("**%s** — this repository, %s", l.Name, where)
+	}
+	return fmt.Sprintf("**%s** — %s in `%s` at `%s` (`%.7s`)",
+		l.Name, where, escapePipes(l.Repository), l.Ref, l.Commit)
 }
 
 func (r Report) headline() string {

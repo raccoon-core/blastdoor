@@ -61,6 +61,7 @@ func resolveLayers(ctx context.Context, sources map[string]config.Source, log *o
 		provenance = append(provenance, report.Layer{
 			Name:       name,
 			Repository: src.Repository,
+			Directory:  src.Directory,
 			Ref:        src.Ref,
 			Commit:     commit,
 			Weight:     *src.Weight,
