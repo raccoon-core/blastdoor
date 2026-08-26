@@ -198,15 +198,17 @@ func (r Report) WriteMarkdown(w io.Writer) error {
 	b.WriteString(r.heading())
 	b.WriteString(r.headline())
 
+	// Directly under the verdict: what judged it is context for every line
+	// that follows, not a footnote to them.
+	if line := r.layerLine(); line != "" {
+		b.WriteString("\n" + line + "\n")
+	}
+
 	if len(r.Guarded) > 0 {
 		b.WriteString("\nThis change also edits the rules that judge it, so a person has to look regardless:\n\n")
 		for _, p := range r.Guarded {
 			b.WriteString(fmt.Sprintf("- `%s`\n", escapePipes(p)))
 		}
-	}
-
-	if line := r.layerLine(); line != "" {
-		b.WriteString("\n" + line + "\n")
 	}
 
 	if len(r.Uncovered) > 0 {
@@ -264,19 +266,27 @@ func (r Report) WriteMarkdown(w io.Writer) error {
 // layerLine names the tiers that judged the run, so a reader knows what the
 // verdict was measured against without opening the config.
 func (r Report) layerLine() string {
-	if len(r.Layers) < 2 {
-		// One layer is the ordinary case and needs no explaining.
+	if len(r.Layers) == 0 {
 		return ""
 	}
+
 	parts := make([]string, 0, len(r.Layers))
 	for _, l := range r.Layers {
+		// A ref moves, so the commit it resolved to is what makes a verdict
+		// explainable after the fact.
 		if l.Commit != "" {
 			parts = append(parts, fmt.Sprintf("%s (%s@%.7s)", l.Name, l.Ref, l.Commit))
 			continue
 		}
 		parts = append(parts, l.Name)
 	}
-	return "Judged by: " + strings.Join(parts, ", ") + " — highest weight first."
+
+	line := "Judged by: " + strings.Join(parts, ", ")
+	if len(parts) > 1 {
+		// Only worth explaining when there is an order to explain.
+		line += " — highest weight first"
+	}
+	return line + "."
 }
 
 func (r Report) headline() string {
