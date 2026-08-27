@@ -121,8 +121,11 @@ blastdoor:eval:
     expire_in: 1 day
 
 # pass -> approves; review -> requires a human approval; deny -> also fails the
-# job, so the pipeline is red. Add --auto-merge to let passing changes merge on
-# their own.
+# job, so the pipeline is red.
+#
+# To let passing changes merge on their own, set auto_merge: true in
+# .blastdoor.yml rather than adding --auto-merge here: that file is guarded, so
+# the commit switching it on is reviewed by a person.
 #
 # --approval-rule is what makes review mean something: without it the gate
 # posts the summary and fails on deny, but nothing stops a reviewed change

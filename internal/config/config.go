@@ -32,6 +32,14 @@ import (
 // FileName is the config blastdoor looks for in the working directory.
 const FileName = ".blastdoor.yml"
 
+var (
+	lineRef = regexp.MustCompile(`^line (\d+): `)
+	// yaml phrases an unknown key as "field x not found in type
+	// config.Config", which tells a reader about blastdoor's Go types rather
+	// than about their file.
+	unknownField = regexp.MustCompile(`field (\S+) not found in type \S+`)
+)
+
 // namedTypeErrors rewrites yaml's type errors to say which key was wrong.
 //
 // yaml reports "line 3: cannot unmarshal !!str into []string", which leaves
@@ -40,12 +48,6 @@ const FileName = ".blastdoor.yml"
 // invited — so the message has to name the key that has to change.
 func namedTypeErrors(raw []byte, typeErr *yaml.TypeError) string {
 	keys := topLevelKeys(raw)
-
-	lineRef := regexp.MustCompile(`^line (\d+): `)
-	// yaml phrases an unknown key as "field x not found in type
-	// config.Config", which tells a reader about blastdoor's Go types rather
-	// than about their file.
-	unknownField := regexp.MustCompile(`field (\S+) not found in type \S+`)
 
 	out := make([]string, 0, len(typeErr.Errors))
 	for _, msg := range typeErr.Errors {

@@ -36,3 +36,7 @@ go.work.sum
 bin/
 dist/
 node_modules/
+
+# docs site, and the venv `make docs-serve` builds it in
+site/
+.venv-docs/

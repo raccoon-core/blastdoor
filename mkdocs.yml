@@ -1,0 +1,122 @@
+site_name: blastdoor
+site_description: Terraform/OpenTofu plan checker for self-service.
+site_url: https://raccoon-core.github.io/blastdoor/
+repo_url: https://github.com/raccoon-core/blastdoor
+repo_name: raccoon-core/blastdoor
+edit_uri: edit/main/docs/
+copyright: Apache 2.0
+
+# AGENTS.md, CONTRIBUTING.md and examples/README.md stay where they are — the
+# first two are read at the repository root by convention, and the third sits
+# beside the plans it describes. They are symlinked into docs/ so the site and
+# the repository cannot drift apart, and scripts/mkdocs_hooks.py rewrites the
+# repository-relative links inside them to point at GitHub.
+docs_dir: docs
+
+# Design specs are working notes, not documentation for anyone using blastdoor,
+# and requirements.txt builds the site rather than being part of it.
+exclude_docs: |
+  superpowers/
+  requirements.txt
+
+theme:
+  name: material
+  language: en
+  icon:
+    repo: fontawesome/brands/github
+  features:
+    - navigation.instant
+    - navigation.tracking
+    - navigation.sections
+    - navigation.top
+    - navigation.footer
+    - content.code.copy
+    - content.action.edit
+    - search.highlight
+    - search.suggest
+    - toc.follow
+  palette:
+    - media: "(prefers-color-scheme)"
+      toggle:
+        icon: material/brightness-auto
+        name: Follow the system theme
+    - media: "(prefers-color-scheme: light)"
+      scheme: default
+      primary: blue grey
+      accent: indigo
+      toggle:
+        icon: material/brightness-7
+        name: Switch to dark mode
+    - media: "(prefers-color-scheme: dark)"
+      scheme: slate
+      primary: blue grey
+      accent: indigo
+      toggle:
+        icon: material/brightness-4
+        name: Switch to light mode
+
+hooks:
+  - scripts/mkdocs_hooks.py
+
+markdown_extensions:
+  - admonition
+  - attr_list
+  - def_list
+  - md_in_html
+  - tables
+  - toc:
+      permalink: true
+  - pymdownx.details
+  # Renders the :material-*: shortcodes the home page's cards use as SVG.
+  # Without it they come out as literal text.
+  - pymdownx.emoji:
+      emoji_index: !!python/name:material.extensions.emoji.twemoji
+      emoji_generator: !!python/name:material.extensions.emoji.to_svg
+  - pymdownx.superfences
+  - pymdownx.highlight:
+      anchor_linenums: true
+  - pymdownx.inlinehilite
+  - pymdownx.snippets
+  - pymdownx.tabbed:
+      alternate_style: true
+
+# A link to a page that does not exist is a broken link on the published site,
+# so it fails the build rather than being reported into a log nobody reads.
+validation:
+  omitted_files: warn
+  absolute_links: warn
+  unrecognized_links: warn
+  anchors: warn
+  nav:
+    omitted_files: warn
+    not_found: warn
+
+nav:
+  - Home: index.md
+  - Install: install.md
+  - Writing policies:
+      - Your first policy: writing-policies.md
+      - The three verdicts: verdicts.md
+      - Worked examples: examples.md
+  - Configuration:
+      - .blastdoor.yml: configuration.md
+      - Environment: environment.md
+      - Gating: gating.md
+      - Layered policies: layered-policies.md
+  - Running it:
+      - Commands: commands.md
+      - Terraform, OpenTofu, Terragrunt: toolchain.md
+      - GitLab: gitlab.md
+  - Hardening: hardening.md
+  - Contributing:
+      - Contributing: contributing.md
+      - Notes for agents: agents.md
+
+extra:
+  social:
+    - icon: fontawesome/brands/github
+      link: https://github.com/raccoon-core/blastdoor
+      name: blastdoor on GitHub
+    - icon: fontawesome/brands/docker
+      link: https://hub.docker.com/r/raccooncore/blastdoor
+      name: blastdoor on Docker Hub

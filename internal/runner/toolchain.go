@@ -53,31 +53,16 @@ func DetectManager(unitDir string) Manager {
 	return ManagerNone
 }
 
-// hasMiseConfig walks up from the unit looking for a mise project file,
-// stopping at a repository root.
+// hasMiseConfig walks up from the unit looking for a mise project file.
 func hasMiseConfig(unitDir string) bool {
-	dir, err := filepath.Abs(unitDir)
-	if err != nil {
-		return false
-	}
-
-	for {
+	for dir := range searchUpward(unitDir) {
 		for _, name := range miseConfigNames {
 			if _, err := os.Stat(filepath.Join(dir, name)); err == nil {
 				return true
 			}
 		}
-		// A repository root is as far as a unit's configuration reaches.
-		if _, err := os.Stat(filepath.Join(dir, ".git")); err == nil {
-			return false
-		}
-
-		parent := filepath.Dir(dir)
-		if parent == dir {
-			return false
-		}
-		dir = parent
 	}
+	return false
 }
 
 func onPath(binary string) bool {

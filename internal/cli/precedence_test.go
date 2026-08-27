@@ -168,7 +168,7 @@ func TestIgnorePatternSurvivesFromConfigToMatcher(t *testing.T) {
 	if !reflect.DeepEqual(ignores, []string{"**/README.md"}) {
 		t.Fatalf("ignore = %v", ignores)
 	}
-	if !matchesGuard("terraform/components/kafka/README.md", ignores) {
+	if !matchesPath("terraform/components/kafka/README.md", ignores) {
 		t.Error("a nested README should match the pattern from the config")
 	}
 }

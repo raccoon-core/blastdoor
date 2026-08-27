@@ -9,6 +9,7 @@ package detect
 import (
 	"fmt"
 	"io/fs"
+	"iter"
 	"os"
 	"os/exec"
 	"path"
@@ -88,6 +89,27 @@ func FindUnits(repoDir, root string) ([]string, error) {
 	return units, nil
 }
 
+// ancestors yields a unit's own directory and each parent above it, stopping
+// at root.
+//
+// How far a unit's configuration reaches is one rule with two readings: a unit
+// is affected by a change anywhere above it (affected), and a directory covers
+// a unit when some unit sits at or below it (uncovered). Both walk this chain,
+// so it is written once — two copies of the stop condition would eventually
+// disagree about whether root itself counts.
+func ancestors(unit, root string) iter.Seq[string] {
+	return func(yield func(string) bool) {
+		for dir := unit; ; dir = path.Dir(dir) {
+			if !yield(dir) {
+				return
+			}
+			if dir == root || dir == "." || dir == "/" {
+				return
+			}
+		}
+	}
+}
+
 // affected keeps the units for which a .hcl or .tf file changed in the unit
 // itself or in any ancestor directory up to root.
 func affected(units, changed []string, root string) []string {
@@ -103,12 +125,9 @@ func affected(units, changed []string, root string) []string {
 
 	var out []string
 	for _, unit := range units {
-		for dir := unit; ; dir = path.Dir(dir) {
+		for dir := range ancestors(unit, root) {
 			if changedInDir[dir] {
 				out = append(out, unit)
-				break
-			}
-			if dir == root || dir == "." || dir == "/" {
 				break
 			}
 		}

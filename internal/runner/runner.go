@@ -9,6 +9,7 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"iter"
 	"os"
 	"path/filepath"
 )
@@ -139,44 +140,61 @@ func Detect(unitDir string) (Tool, error) {
 	return "", fmt.Errorf("%s has no terragrunt.hcl and no .tf files — not a unit", unitDir)
 }
 
+// pinFiles are the version files that name a tool, in the order a single
+// directory is searched. A directory holding both is ambiguous, and OpenTofu
+// wins there.
+var pinFiles = []struct {
+	name string
+	tool Tool
+}{
+	{".opentofu-version", ToolTofu},
+	{".terraform-version", ToolTerraform},
+}
+
 // PinnedTool reports which of OpenTofu/Terraform the repository pins for a
 // unit, and the file that says so.
 //
-// The search walks up from the unit, because that is how tenv resolves a
-// version: a .terraform-version several directories above a Terragrunt unit
-// still governs it. Looking only inside the unit would miss it and quietly
-// fall back to OpenTofu against a Terraform repository.
-//
-// The nearest file wins. A directory holding both is ambiguous, and OpenTofu
-// wins there.
+// The nearest file wins, which is what searchUpward yields first.
 func PinnedTool(unitDir string) (tool Tool, file string, ok bool) {
-	dir, err := filepath.Abs(unitDir)
-	if err != nil {
-		return "", "", false
-	}
-
-	for {
-		for _, candidate := range []struct {
-			name string
-			tool Tool
-		}{
-			{".opentofu-version", ToolTofu},
-			{".terraform-version", ToolTerraform},
-		} {
+	for dir := range searchUpward(unitDir) {
+		for _, candidate := range pinFiles {
 			path := filepath.Join(dir, candidate.name)
 			if _, err := os.Stat(path); err == nil {
 				return candidate.tool, path, true
 			}
 		}
+	}
+	return "", "", false
+}
 
-		// A repository root is as far as a unit's configuration reaches.
-		if _, err := os.Stat(filepath.Join(dir, ".git")); err == nil {
-			return "", "", false
+// searchUpward yields the unit's own directory and each parent above it,
+// nearest first, stopping once it has yielded a repository root.
+//
+// Configuration is resolved by walking up because that is how the version
+// managers resolve it: a .terraform-version several directories above a
+// Terragrunt unit still governs it, and a mise.toml at the repository root
+// still makes the unit a mise project. Looking only inside the unit would miss
+// both — and for PinnedTool that means quietly planning a Terraform repository
+// with OpenTofu. A repository root is where it stops, because that is as far
+// as a unit's configuration reaches.
+func searchUpward(unitDir string) iter.Seq[string] {
+	return func(yield func(string) bool) {
+		dir, err := filepath.Abs(unitDir)
+		if err != nil {
+			return
 		}
-		parent := filepath.Dir(dir)
-		if parent == dir {
-			return "", "", false
+		for {
+			if !yield(dir) {
+				return
+			}
+			if _, err := os.Stat(filepath.Join(dir, ".git")); err == nil {
+				return
+			}
+			parent := filepath.Dir(dir)
+			if parent == dir {
+				return
+			}
+			dir = parent
 		}
-		dir = parent
 	}
 }

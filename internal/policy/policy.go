@@ -12,7 +12,6 @@ import (
 	"errors"
 	"fmt"
 	"io/fs"
-	"os"
 	"path/filepath"
 	"sort"
 	"strings"
@@ -226,37 +225,6 @@ func keepRego(_ string, info fs.FileInfo, _ int) bool {
 	return filepath.Ext(info.Name()) != ".rego"
 }
 
-// countRego reports how many .rego files the given paths hold, walking
-// directories the way the loader does.
-func countRego(paths []string) (int, error) {
-	n := 0
-	for _, p := range paths {
-		info, err := os.Stat(p)
-		if err != nil {
-			return 0, fmt.Errorf("reading policy path: %w", err)
-		}
-		if !info.IsDir() {
-			if filepath.Ext(info.Name()) == ".rego" {
-				n++
-			}
-			continue
-		}
-		err = filepath.WalkDir(p, func(_ string, d fs.DirEntry, err error) error {
-			if err != nil {
-				return err
-			}
-			if !d.IsDir() && filepath.Ext(d.Name()) == ".rego" {
-				n++
-			}
-			return nil
-		})
-		if err != nil {
-			return 0, fmt.Errorf("scanning %s for policies: %w", p, err)
-		}
-	}
-	return n, nil
-}
-
 // New compiles the policies described by opts.
 func New(ctx context.Context, opts Options) (*Evaluator, error) {
 	layers := opts.Layers
@@ -318,17 +286,18 @@ func checkWeights(layers []Layer) error {
 // moved to data.layers.<name> here so each layer can be asked on its own,
 // which is what makes one able to override another.
 func compileLayer(ctx context.Context, layer Layer, store storage.Store) (compiledLayer, error) {
-	found, err := countRego(layer.Paths)
-	if err != nil {
-		return compiledLayer{}, fmt.Errorf("policy layer %q: %w", layer.Name, err)
-	}
-	if found == 0 {
-		return compiledLayer{}, fmt.Errorf("policy layer %q: no .rego files found under %s", layer.Name, strings.Join(layer.Paths, ", "))
-	}
-
 	modules, err := loadModules(layer)
 	if err != nil {
 		return compiledLayer{}, err
+	}
+	// A path holding no .rego at all is a mistyped path or the wrong
+	// subdirectory, not an empty rule set. Compiling nothing would deny every
+	// change for want of a rule, which reads as a verdict on the plan rather
+	// than as the mistake it is. The loader has already walked the paths under
+	// keepRego, so what it found is the count — asking the filesystem a second
+	// time would only invite the two answers to drift apart.
+	if len(modules) == 0 {
+		return compiledLayer{}, fmt.Errorf("policy layer %q: no .rego files found under %s", layer.Name, strings.Join(layer.Paths, ", "))
 	}
 
 	out := compiledLayer{name: layer.Name, weight: layer.Weight, queries: map[Verdict]rego.PreparedEvalQuery{}}
@@ -499,9 +468,6 @@ func (e *Evaluator) layerJudgements(ctx context.Context, layer compiledLayer, pl
 
 	out := make(map[string]Judgement, len(matched))
 	for address, byVerdict := range matched {
-		if len(byVerdict) == 0 {
-			continue
-		}
 		verdict := Pass
 		for v := range byVerdict {
 			verdict = Worse(verdict, v)

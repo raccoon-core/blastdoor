@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -123,56 +124,17 @@ or --plan-dir at the tree 'blastdoor plan' produced, to judge a whole change.`,
 				return err
 			}
 
-			units := make([]report.Unit, 0, len(plans))
-			for _, p := range plans {
-				raw, err := os.ReadFile(p.file)
-				if err != nil {
-					return fmt.Errorf("reading %s: %w", p.file, err)
-				}
-				var decoded any
-				if err := json.Unmarshal(raw, &decoded); err != nil {
-					return fmt.Errorf("parsing %s as plan JSON: %w", p.file, err)
-				}
-				// Refuse to score something that is not a plan: an
-				// unreadable document must not come out looking safe.
-				if err := policy.ValidatePlan(decoded); err != nil {
-					return fmt.Errorf("%s: %w", p.file, err)
-				}
-
-				res, err := evaluator.Evaluate(cmd.Context(), decoded)
-				if err != nil {
-					return fmt.Errorf("%s: %w", p.file, err)
-				}
-				units = append(units, report.Unit{Path: p.name, Changes: res.Changes})
+			units, err := judgePlans(cmd.Context(), evaluator, plans)
+			if err != nil {
+				return err
 			}
 
 			rep := report.Build(units)
 			rep.Engines = enginesFor(plans)
 			rep.Layers = provenance
 
-			// A change that edits its own policies or pipeline cannot be
-			// judged by them, so hand it to a person whatever it scored.
-			if len(guardPaths) > 0 {
-				tripped, err := trippedGuards(guardPaths, baseRef, headRef)
-				switch {
-				case err == nil:
-					rep.RequireReview(tripped)
-
-				// Someone wrote a guard list down, so failing to check it is
-				// an error: the caller asked for a guarantee blastdoor cannot
-				// give, and a verdict that quietly skipped the check is worse
-				// than no verdict.
-				case guardsStated:
-					return err
-
-				// The only guard is the config guarding itself, and there is
-				// no diff to check it against — no merge request, so nothing
-				// to gate and nothing to guard. This is someone trying a
-				// policy against a saved plan.
-				default:
-					fmt.Fprintf(cmd.ErrOrStderr(),
-						"no diff to check %s against, so it is not guarded here\n", cfg().Path)
-				}
+			if err := applyGuards(cmd, &rep, guardPaths, guardsStated, baseRef, headRef); err != nil {
+				return err
 			}
 
 			// A file no unit selects is planned by nothing and judged by
@@ -224,6 +186,65 @@ or --plan-dir at the tree 'blastdoor plan' produced, to judge a whole change.`,
 type planInput struct {
 	name string // unit path, used as the label in the report
 	file string
+}
+
+// judgePlans reads each plan and judges it, one report unit per plan.
+//
+// Any plan that cannot be read, parsed or validated fails the whole command
+// rather than being skipped: a document blastdoor could not read must never
+// come out looking like one it read and was happy with.
+func judgePlans(ctx context.Context, evaluator *policy.Evaluator, plans []planInput) ([]report.Unit, error) {
+	units := make([]report.Unit, 0, len(plans))
+	for _, p := range plans {
+		raw, err := os.ReadFile(p.file)
+		if err != nil {
+			return nil, fmt.Errorf("reading %s: %w", p.file, err)
+		}
+		var decoded any
+		if err := json.Unmarshal(raw, &decoded); err != nil {
+			return nil, fmt.Errorf("parsing %s as plan JSON: %w", p.file, err)
+		}
+		if err := policy.ValidatePlan(decoded); err != nil {
+			return nil, fmt.Errorf("%s: %w", p.file, err)
+		}
+
+		res, err := evaluator.Evaluate(ctx, decoded)
+		if err != nil {
+			return nil, fmt.Errorf("%s: %w", p.file, err)
+		}
+		units = append(units, report.Unit{Path: p.name, Changes: res.Changes})
+	}
+	return units, nil
+}
+
+// applyGuards forces review when the change edits the rules that judge it.
+//
+// A change that edits its own policies or pipeline cannot be judged by them,
+// so it goes to a person whatever it scored.
+//
+// stated says whether anyone actually asked for guards, and it decides what
+// happens when the diff cannot be read. If they did, failing to check is an
+// error: the caller asked for a guarantee blastdoor cannot give, and a verdict
+// that quietly skipped the check is worse than no verdict. If they did not,
+// the only guard is the config guarding itself and there is no diff to check
+// it against — no merge request, so nothing to gate and nothing to guard.
+// That is someone trying a policy against a saved plan, so say so and carry on.
+func applyGuards(cmd *cobra.Command, rep *report.Report, guardPaths []string, stated bool, baseRef, headRef string) error {
+	if len(guardPaths) == 0 {
+		return nil
+	}
+
+	tripped, err := trippedGuards(guardPaths, baseRef, headRef)
+	switch {
+	case err == nil:
+		rep.RequireReview(tripped)
+	case stated:
+		return err
+	default:
+		fmt.Fprintf(cmd.ErrOrStderr(),
+			"no diff to check %s against, so it is not guarded here\n", cfg().Path)
+	}
+	return nil
 }
 
 // collectPlans gathers plan files from explicit --plan flags and/or a tree of
@@ -305,7 +326,7 @@ func trippedGuards(guardPaths []string, baseRef, headRef string) ([]string, erro
 
 	var tripped []string
 	for _, file := range changed {
-		if matchesGuard(file, guardPaths) {
+		if matchesPath(file, guardPaths) {
 			tripped = append(tripped, filepath.ToSlash(filepath.Clean(file)))
 		}
 	}
@@ -351,7 +372,7 @@ func uncoveredFiles(root, baseRef, headRef string, exempt []string) ([]string, e
 
 	var out []string
 	for _, file := range missing {
-		if matchesGuard(file, exempt) {
+		if matchesPath(file, exempt) {
 			continue
 		}
 		out = append(out, file)
@@ -359,7 +380,7 @@ func uncoveredFiles(root, baseRef, headRef string, exempt []string) ([]string, e
 	return out, nil
 }
 
-// matchesGuard reports whether a changed file is one of the given paths, sits
+// matchesPath reports whether a changed file is one of the given paths, sits
 // underneath one, or matches one as a pattern.
 //
 // Three forms, in the order they are tried:
@@ -373,10 +394,13 @@ func uncoveredFiles(root, baseRef, headRef string, exempt []string) ([]string, e
 // ignore list, where the interesting sets are shaped like "every README in the
 // repository" — a repository with one README per component cannot list them
 // one by one and keep the list honest.
-func matchesGuard(file string, guardPaths []string) bool {
+//
+// It serves both lists — guards and coverage exemptions — which is why it is
+// named for the matching rather than for either caller.
+func matchesPath(file string, patterns []string) bool {
 	f := filepath.ToSlash(filepath.Clean(file))
-	for _, guard := range guardPaths {
-		g := filepath.ToSlash(filepath.Clean(guard))
+	for _, pattern := range patterns {
+		g := filepath.ToSlash(filepath.Clean(pattern))
 
 		if rest, ok := strings.CutPrefix(g, "**/"); ok {
 			if f == rest || strings.HasSuffix(f, "/"+rest) {

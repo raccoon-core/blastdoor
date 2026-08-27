@@ -90,9 +90,9 @@ func TestTrippedGuardsMatching(t *testing.T) {
 
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			got := matchesGuard(tc.changed, []string{tc.guard})
+			got := matchesPath(tc.changed, []string{tc.guard})
 			if got != tc.want {
-				t.Errorf("matchesGuard(%q, %q) = %v, want %v", tc.changed, tc.guard, got, tc.want)
+				t.Errorf("matchesPath(%q, %q) = %v, want %v", tc.changed, tc.guard, got, tc.want)
 			}
 		})
 	}

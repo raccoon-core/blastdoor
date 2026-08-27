@@ -39,6 +39,24 @@ examples: build ## Score every example plan
 		./bin/blastdoor eval --plan "$$plan" --policy examples/policies --out-dir /tmp/blastdoor-examples; \
 	done
 
+DOCS_VENV := .venv-docs
+DOCS_BIN  := $(DOCS_VENV)/bin
+
+# Pinned in docs/requirements.txt so this is the site CI publishes.
+$(DOCS_VENV): docs/requirements.txt
+	python3 -m venv $(DOCS_VENV)
+	$(DOCS_BIN)/pip install -q --upgrade pip
+	$(DOCS_BIN)/pip install -q -r docs/requirements.txt
+	@touch $(DOCS_VENV)
+
+.PHONY: docs-serve
+docs-serve: $(DOCS_VENV) ## Preview the docs site on localhost:8000
+	$(DOCS_BIN)/mkdocs serve
+
+.PHONY: docs-build
+docs-build: $(DOCS_VENV) ## Build the docs site the way CI does
+	$(DOCS_BIN)/mkdocs build --strict
+
 .PHONY: release-check
 release-check: ## Validate the release config without publishing
 	goreleaser check
@@ -47,7 +65,7 @@ release-check: ## Validate the release config without publishing
 
 .PHONY: clean
 clean:
-	rm -rf bin dist .blastdoor
+	rm -rf bin dist .blastdoor site $(DOCS_VENV)
 
 .PHONY: help
 help: ## List targets

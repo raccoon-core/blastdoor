@@ -43,6 +43,7 @@ func Uncovered(opts Options) ([]string, error) {
 // direction, from each unit up towards the root.
 func uncovered(units, changed []string, root string) []string {
 	root = filepath.ToSlash(filepath.Clean(root))
+	covering := coveringDirs(units, root)
 
 	seen := map[string]bool{}
 	var out []string
@@ -51,7 +52,7 @@ func uncovered(units, changed []string, root string) []string {
 		if seen[f] {
 			continue
 		}
-		if affectsPlan(f) && coversAUnit(path.Dir(f), units, root) {
+		if affectsPlan(f) && covering[path.Dir(f)] {
 			continue
 		}
 		seen[f] = true
@@ -61,17 +62,24 @@ func uncovered(units, changed []string, root string) []string {
 	return out
 }
 
-// coversAUnit reports whether any unit is dir itself or lives beneath it.
-func coversAUnit(dir string, units []string, root string) bool {
+// coveringDirs is the set of directories that have a unit at or below them:
+// every unit's own directory and every ancestor of one, up to root.
+//
+// Built once for the whole diff rather than re-derived per file. A repository
+// with hundreds of units and a diff touching hundreds of files would otherwise
+// re-walk every unit's ancestry for each of them, and the answer never depends
+// on which file is being asked about.
+func coveringDirs(units []string, root string) map[string]bool {
+	covering := map[string]bool{}
 	for _, unit := range units {
-		for d := unit; ; d = path.Dir(d) {
-			if d == dir {
-				return true
-			}
-			if d == root || d == "." || d == "/" {
+		for dir := range ancestors(unit, root) {
+			// An ancestor already recorded means the rest of this unit's chain
+			// was recorded by an earlier unit too.
+			if covering[dir] {
 				break
 			}
+			covering[dir] = true
 		}
 	}
-	return false
+	return covering
 }
