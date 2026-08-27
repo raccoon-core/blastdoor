@@ -1,0 +1,51 @@
+name: pr-image-cleanup
+
+# Deletes the ghcr.io preview image that ci.yml pushed for a pull request.
+# Without this, every pull request leaves a container version behind forever.
+on:
+  pull_request:
+    types: [closed]
+
+permissions:
+  contents: read
+  packages: write
+
+jobs:
+  delete:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Delete the preview image
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: pr-${{ github.event.pull_request.number }}
+          PACKAGE: blastdoor
+          OWNER: ${{ github.repository_owner }}
+          OWNER_TYPE: ${{ github.event.repository.owner.type }}
+        run: |
+          set -euo pipefail
+
+          # The packages API splits by owner kind.
+          if [ "$OWNER_TYPE" = "Organization" ]; then
+            base="/orgs/${OWNER}"
+          else
+            base="/users/${OWNER}"
+          fi
+
+          # A pull request from a fork never got an image pushed, and the
+          # package may not exist at all yet. Neither is a failure.
+          if ! versions=$(gh api "${base}/packages/container/${PACKAGE}/versions?per_page=100" 2>/dev/null); then
+            echo "No ${PACKAGE} package to clean up."
+            exit 0
+          fi
+
+          id=$(jq -r --arg tag "$TAG" \
+            'first(.[] | select((.metadata.container.tags // []) | index($tag)) | .id) // empty' \
+            <<<"$versions")
+
+          if [ -z "$id" ]; then
+            echo "Nothing tagged ${TAG}; nothing to delete."
+            exit 0
+          fi
+
+          gh api --method DELETE "${base}/packages/container/${PACKAGE}/versions/${id}"
+          echo "Deleted ${PACKAGE}:${TAG} (version ${id})."

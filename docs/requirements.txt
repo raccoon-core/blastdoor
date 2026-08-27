@@ -1,0 +1,4 @@
+# Pinned so the site CI publishes is the site you get locally.
+# Bump deliberately: mkdocs-material minor releases change theme markup.
+mkdocs==1.6.1
+mkdocs-material==9.7.7

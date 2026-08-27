@@ -1,0 +1,16 @@
+{
+  "format_version": "1.2",
+  "resource_changes": [
+    {
+      "address": "kafka_topic.sneaky",
+      "mode": "managed",
+      "type": "kafka_topic",
+      "name": "sneaky",
+      "change": {
+        "actions": ["read"],
+        "before": null,
+        "after": { "name": "sneaky" }
+      }
+    }
+  ]
+}

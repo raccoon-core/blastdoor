@@ -1,0 +1,147 @@
+# Blastdoor jobs for a GitLab repository.
+#
+# Include it from your .gitlab-ci.yml:
+#
+#   include:
+#     - remote: https://raw.githubusercontent.com/raccoon-core/blastdoor/v1/ci/gitlab/blastdoor.yml
+#
+#   stages: [lint, plan, risk, documentation]
+#
+# Set these CI/CD variables in the project:
+#
+#   BLASTDOOR_GITLAB_TOKEN     token with the api scope (masked, protected)
+#   BLASTDOOR_APPROVER_GROUP_IDS  optional: group ids allowed to approve
+#
+# The plan job needs whatever credentials your providers and state backend
+# already use; add them the way you would for any terraform job.
+#
+# Works on merge request pipelines and on plain branch pipelines. On a branch,
+# blastdoor diffs against the merge base with the default branch, which needs
+# the full history — hence GIT_DEPTH: 0 below. The gate then looks up the open
+# merge request for the branch; with none open it says so and does nothing.
+
+variables:
+  BLASTDOOR_IMAGE: raccooncore/blastdoor:v1
+  # A shallow clone has no merge base with the default branch, which is what a
+  # branch pipeline diffs against.
+  GIT_DEPTH: "0"
+  # Directory the jobs pass artifacts through.
+  BLASTDOOR_DIR: .blastdoor
+  # Where your policies live, relative to the repository root.
+  BLASTDOOR_POLICY_DIR: policy
+  # Directory to scan for units.
+  BLASTDOOR_ROOT: .
+  # Paths that force human review when a merge request changes them, whatever
+  # the verdict. Without this, a change can rewrite the policies that judge it,
+  # or the pipeline that runs them, in the same commit.
+  # .blastdoor.yml is listed here as a floor. Blastdoor guards its own config
+  # whenever it loads one, but that catches an edit, not a deletion: a config
+  # that is gone cannot ask to be guarded. Naming it here covers the deletion.
+  #
+  # Keep this variable set. Guard paths are an override, not a merge, so a
+  # pipeline that passes none hands the guard list to the branch being judged.
+  BLASTDOOR_GUARD_PATHS: ".blastdoor.yml $BLASTDOOR_POLICY_DIR .gitlab-ci.yml"
+  # Paths allowed to change without any unit planning them. Everything else a
+  # merge request touches that selects no unit forces a review: a file no plan
+  # covers is a file no policy has read. Docs and runbooks belong here; a
+  # values file a unit reads does not.
+  BLASTDOOR_IGNORE_PATHS: ""
+  # Where remote policy layers are checked out, when .blastdoor.yml names any.
+  # Under the workspace so this job can cache it; add it to .gitignore.
+  BLASTDOOR_POLICY_CACHE: .blastdoor-policies
+
+.blastdoor:rules:
+  # Run on merge request pipelines, and on branch pipelines that no merge
+  # request pipeline already covers — the second condition is what stops the
+  # same commit being pipelined twice. Never on the default branch, where
+  # there is nothing to compare against.
+  default:
+    - if: $CI_PIPELINE_SOURCE == "merge_request_event"
+    - if: $CI_COMMIT_BRANCH && $CI_COMMIT_BRANCH != $CI_DEFAULT_BRANCH && $CI_OPEN_MERGE_REQUESTS == null
+
+# Installs the tool versions each unit asks for, then plans every unit the
+# change touches. Version selection belongs to tenv or mise, whichever
+# the unit is set up for.
+blastdoor:plan:
+  stage: plan
+  image: $BLASTDOOR_IMAGE
+  rules:
+    - !reference [".blastdoor:rules", default]
+  script:
+    - mkdir -p "$BLASTDOOR_DIR"
+    - blastdoor detect --root "$BLASTDOOR_ROOT" | tee "$BLASTDOOR_DIR/units.txt"
+    # Install the tool versions first, in the same job: a toolchain that will
+    # not install should not look like a plan that will not run.
+    - blastdoor prepare --units-file "$BLASTDOOR_DIR/units.txt"
+    - blastdoor plan --units-file "$BLASTDOOR_DIR/units.txt" --out-dir "$BLASTDOOR_DIR"
+  artifacts:
+    paths:
+      - $BLASTDOOR_DIR/
+    expire_in: 1 day
+
+# Judges every change and posts the summary on the merge request.
+blastdoor:eval:
+  stage: risk
+  image: $BLASTDOOR_IMAGE
+  # Policy layers are fetched per run; cache the checkouts between pipelines.
+  cache:
+    key: blastdoor-policies-v1
+    paths:
+      - $BLASTDOOR_POLICY_CACHE
+  needs:
+    - job: blastdoor:plan
+      artifacts: true
+  rules:
+    - !reference [".blastdoor:rules", default]
+  script:
+    - |
+      # Word-split the lists without letting the shell expand them: a pattern
+      # like **/README.md is for blastdoor to interpret, and the shell would
+      # otherwise rewrite it into whatever paths happen to exist here.
+      set -f
+      guards=""
+      for p in $BLASTDOOR_GUARD_PATHS; do guards="$guards --guard-path $p"; done
+      ignores=""
+      for p in $BLASTDOOR_IGNORE_PATHS; do ignores="$ignores --ignore-path $p"; done
+      # Still unset when eval runs: $ignores is unquoted there too, and this
+      # is the last command, so its exit status is the job's.
+      blastdoor eval \
+        --plan-dir "$BLASTDOOR_DIR" \
+        --policy "$BLASTDOOR_POLICY_DIR" \
+        --out-dir "$BLASTDOOR_DIR" \
+        --root "$BLASTDOOR_ROOT" \
+        --require-coverage \
+        $guards $ignores
+  artifacts:
+    reports:
+      dotenv: $BLASTDOOR_DIR/blastdoor.env
+    paths:
+      - $BLASTDOOR_DIR/report.json
+      - $BLASTDOOR_DIR/summary.md
+    expire_in: 1 day
+
+# pass -> approves; review -> requires a human approval; deny -> also fails the
+# job, so the pipeline is red.
+#
+# To let passing changes merge on their own, set auto_merge: true in
+# .blastdoor.yml rather than adding --auto-merge here: that file is guarded, so
+# the commit switching it on is reviewed by a person.
+#
+# --approval-rule is what makes review mean something: without it the gate
+# posts the summary and fails on deny, but nothing stops a reviewed change
+# going in unapproved. It is off in the binary and passed here, the same way
+# --guard-path is, because a template that gates is the point of the template.
+#
+# Add --reviewers to also put the approver groups' members on the merge request
+# as reviewers, so they are told there is something to look at. It expands each
+# group into its members, so the token has to be able to read them.
+blastdoor:gate:
+  stage: risk
+  image: $BLASTDOOR_IMAGE
+  needs:
+    - job: blastdoor:eval
+      artifacts: true
+  rules:
+    - !reference [".blastdoor:rules", default]
+  script:
+    - blastdoor gate --report "$BLASTDOOR_DIR/report.json" --summary "$BLASTDOOR_DIR/summary.md" --approval-rule

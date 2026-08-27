@@ -1,0 +1,82 @@
+name: docs
+
+# The site is built on every pull request and published from main.
+#
+# Publishing hangs off a push to main rather than off a release: the docs
+# describe what is on main, and tying them to semantic-release would leave the
+# site stale between releases for a docs-only change — which is most of them.
+# It is also why this is a workflow of its own rather than a job in
+# release.yml, whose publish step deliberately runs off the version job's
+# output. Nothing here creates a tag, so none of that applies.
+on:
+  push:
+    branches: [main]
+    paths:
+      - "docs/**"
+      - "mkdocs.yml"
+      - "scripts/mkdocs_hooks.py"
+      - "AGENTS.md"
+      - "CONTRIBUTING.md"
+      - "examples/README.md"
+      - ".github/workflows/docs.yml"
+  pull_request:
+    paths:
+      - "docs/**"
+      - "mkdocs.yml"
+      - "scripts/mkdocs_hooks.py"
+      - "AGENTS.md"
+      - "CONTRIBUTING.md"
+      - "examples/README.md"
+      - ".github/workflows/docs.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+# A queued run replaces an older one, but a run already publishing is left to
+# finish rather than being cancelled half-way through a deploy.
+concurrency:
+  group: docs-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      # AGENTS.md, CONTRIBUTING.md and examples/README.md reach the site as
+      # symlinks under docs/, so the checkout has to keep them as symlinks.
+      # actions/checkout does by default; this is here so a future change to
+      # sparse-checkout does not quietly break three pages.
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+          cache: pip
+          cache-dependency-path: docs/requirements.txt
+
+      - name: Install MkDocs
+        run: pip install -r docs/requirements.txt
+
+      # --strict turns a broken internal link into a failed build. A link that
+      # 404s on the published site is worse than a red pipeline here.
+      - name: Build the site
+        run: mkdocs build --strict
+
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: site
+
+  deploy:
+    needs: build
+    if: github.event_name != 'pull_request'
+    runs-on: ubuntu-latest
+    permissions:
+      pages: write # publish to GitHub Pages
+      id-token: write # the deploy action authenticates with OIDC
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@v4

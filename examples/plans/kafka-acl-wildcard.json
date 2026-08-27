@@ -1,0 +1,22 @@
+{
+  "format_version": "1.2",
+  "resource_changes": [
+    {
+      "address": "kafka_acl.acls[\"topic:prefixed:all:all:read\"]",
+      "type": "kafka_acl",
+      "name": "acls",
+      "change": {
+        "actions": ["create"],
+        "before": null,
+        "after": {
+          "resource_name": "*",
+          "resource_type": "Topic",
+          "resource_pattern_type_filter": "Prefixed",
+          "acl_principal": "User:*",
+          "acl_permission_type": "Allow",
+          "acl_operation": "Read"
+        }
+      }
+    }
+  ]
+}
