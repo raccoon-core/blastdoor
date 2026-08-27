@@ -1,8 +1,9 @@
 # Examples
 
 A worked policy in [policies/kafka.rego](policies/kafka.rego), the smallest
-possible one in [policies/data-reads.rego](policies/data-reads.rego), and one
-plan per scenario in [plans/](plans/). Every verdict below is asserted by
+possible one in [policies/data-reads.rego](policies/data-reads.rego), one plan
+per scenario in [plans/](plans/), and every setting blastdoor understands in
+[blastdoor.yml](blastdoor.yml). Every verdict below is asserted by
 `examples_test.go`, so they cannot drift from the policy.
 
 | Plan | Verdict | Why |
@@ -26,6 +27,22 @@ it does not match, and the change is denied.
 ```console
 blastdoor eval --plan plans/kafka-topic-delete.json --policy policies
 ```
+
+## The config
+
+[blastdoor.yml](blastdoor.yml) is a reference rather than a starting point: it
+sets every key blastdoor understands, each with what it does and what it
+defaults to, so you can see the whole surface in one place. Copy it to
+`.blastdoor.yml` at the root of your repository and delete everything you do
+not need — the config a reviewer can read is the one that only says what this
+repository actually changes.
+
+Two tests keep it honest. It is loaded through the real loader, so a layer
+missing a weight fails here rather than in a pipeline; and its top-level keys
+are compared against the config struct, so a setting added to blastdoor and
+not to this file fails too. It does not run as it stands — the policy layers
+name a host that does not exist, and a source that cannot be fetched fails the
+command.
 
 ## The loop for writing a policy
 

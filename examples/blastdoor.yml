@@ -1,0 +1,165 @@
+# Every setting blastdoor understands, in one file.
+#
+# Copy it to .blastdoor.yml at the root of your repository — the directory the
+# jobs run from — and delete what you do not need. It is a reference, not a
+# starting point: most of what is here restates a default, and a config that
+# only says what the repository actually changes is the one a reviewer can
+# read. Nothing here is required; every key is optional.
+#
+# One rule decides every setting: the flag if the job passed one, otherwise
+# the variable, otherwise this file, otherwise the default. Lists are replaced
+# whole, never merged. An unknown key rejects the whole file, so a config
+# written for a newer blastdoor fails loudly instead of running half-read.
+#
+# It is not runnable as it stands: the policy layers below name a host that
+# does not exist, and a source that cannot be fetched fails the command. Point
+# them at your own, or delete them and keep the local one.
+#
+# Named `blastdoor.yml` rather than `.blastdoor.yml` on purpose, so that the
+# other examples in this directory are not silently judged by it — blastdoor
+# picks up `.blastdoor.yml` from the directory it runs in.
+
+# ---------------------------------------------------------------------------
+# What gets planned
+# ---------------------------------------------------------------------------
+
+# Directory scanned for units — a directory with a terragrunt.hcl or .tf
+# files. Relative to where blastdoor runs. (--root, default ".")
+root: terraform
+
+# Which binary plans a unit. "auto" uses Terragrunt for a Terragrunt unit, and
+# otherwise whichever of OpenTofu/Terraform the repository pins.
+# (--tool, one of: auto, tofu, terraform, terragrunt; default "auto")
+tool: auto
+
+# Which version manager installs the tool versions a unit asks for. "auto"
+# picks mise when the unit or an ancestor is a mise project, tenv otherwise;
+# "none" uses whatever is already on PATH.
+# (--manager, one of: auto, tenv, mise, none; default "auto")
+manager: auto
+
+# The binary Terragrunt wraps. "auto" reads the nearest .terraform-version or
+# .opentofu-version at or above the unit, and falls back to OpenTofu.
+# (--terragrunt-tf-path, one of: auto, tofu, terraform; default "auto")
+terragrunt_tf_path: auto
+
+# ---------------------------------------------------------------------------
+# What judges it
+# ---------------------------------------------------------------------------
+
+# The tiers of policy this repository is judged by, keyed by the name that
+# appears in the report. Each layer is fetched at its ref and evaluated on its
+# own; for one change, the highest-weight layer that judged it at all decides
+# it. A layer that says nothing falls through to the next one down, and a
+# change no layer judges is denied.
+#
+# Weights must be unique, and every layer must state one: defaulting a layer
+# to zero would quietly put it at the bottom. A remote layer must name a ref.
+#
+# A single local layer is the common case — delete the two remote ones if
+# nobody else's rules apply to you.
+#
+# (--policy overrides the whole map, so a job passing --policy ignores every
+# layer here.)
+policies:
+  # Rules every repository in the organisation is judged by.
+  company:
+    repository: https://git.example.com/policies  # git URL to clone
+    ref: v1                                       # branch, tag or commit
+    directory: rules/company                      # path within the source
+    weight: 0                                     # highest weight wins
+  # A domain refining them, without restating what it inherits.
+  domain:
+    repository: https://git.example.com/policies
+    ref: v1
+    directory: rules/domain
+    weight: 1
+  # This repository, with the last word. "." is the working tree and is never
+  # fetched, so `ref` does not apply to it.
+  #
+  # Note that a local allow at weight 99 beats a company deny at weight 0 —
+  # that is what tiering is for. Guard both the layer list and the policy
+  # directory below, or the shared rules are advisory. See docs/hardening.md.
+  local:
+    repository: .
+    directory: policy
+    weight: 99
+
+# Values the policies read as `data.variables`, so a shared rule can carry a
+# default this repository moves:
+#
+#   default max_partitions := 10
+#   max_partitions := data.variables.max_partitions if data.variables.max_partitions
+#
+# The keys belong to whoever wrote the policies, so this is the one place
+# unknown names are not an error. They mount at data.variables and never at
+# the root, so a variable cannot displace the rules themselves. Nothing caps
+# what you may set here — the config guards itself, so raising a limit is a
+# commit a person has to look at.
+variables:
+  max_partitions: 32
+  allowed_regions:
+    - eu-west-1
+    - eu-west-3
+  cost_centre: platform
+
+# ---------------------------------------------------------------------------
+# What forces a person to look
+# ---------------------------------------------------------------------------
+
+# Paths whose modification forces review whatever the verdict. Without this a
+# merge request can rewrite the policies judging it, or the pipeline running
+# them, in the same commit.
+#
+# The config file itself is added to this list whenever one is loaded, whether
+# or not it is named here — but that catches an edit, not a deletion, so name
+# it anyway. Guards are an override: a job passing --guard-path replaces this
+# list entirely, and a job passing none hands the decision to the branch being
+# judged. (--guard-path, default: none)
+guard:
+  - .blastdoor.yml
+  - .gitlab-ci.yml
+  - policy
+  - .github/workflows
+
+# Force review when the change edits files no unit selects: a file no plan
+# covers is a file no policy has read.
+# (--require-coverage, default false)
+require_coverage: true
+
+# Paths require_coverage may leave unplanned. Glob patterns are interpreted by
+# blastdoor, not by the shell. Docs and runbooks belong here; a values file a
+# unit reads does not.
+# (--ignore-path, default: none)
+ignore:
+  - ansible
+  - docs
+  - "**/README.md"
+  - "**/*.md"
+
+# ---------------------------------------------------------------------------
+# The gate
+# ---------------------------------------------------------------------------
+
+# Name of the GitLab approval rule blastdoor manages.
+# (--rule-name, default "blastdoor")
+rule_name: blastdoor
+
+# GitLab group ids allowed to satisfy that rule. The numeric id from the
+# group's page, not its path — quoted or bare, both read the same.
+#
+# This is the one setting a variable outranks rather than merely defaults:
+# BLASTDOOR_APPROVER_GROUP_IDS in the pipeline wins over this file, because a
+# branch naming its own approver group is a branch approving itself.
+# (--approver-group-id, default: none)
+approver_group_ids:
+  - 1234
+  - "5678" # a quoted id is the same statement as a bare one
+
+# Queue the merge once every change passes. Off by default — turn it on only
+# once the policies are ones you would let merge unwatched.
+# (--auto-merge, default false)
+auto_merge: false
+
+# Squash commits when auto-merging. (--squash, default true)
+squash: true

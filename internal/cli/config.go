@@ -80,10 +80,10 @@ func pickBool(cmd *cobra.Command, flag string, flagValue bool, configValue *bool
 //
 // The config takes them as numbers because that is what they are; the flag is
 // a string list because its default comes from a CI variable.
-func groupIDStrings(ids []int) []string {
+func groupIDStrings(ids []config.GroupID) []string {
 	out := make([]string, 0, len(ids))
 	for _, id := range ids {
-		out = append(out, strconv.Itoa(id))
+		out = append(out, strconv.Itoa(int(id)))
 	}
 	return out
 }

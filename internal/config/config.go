@@ -138,15 +138,63 @@ type Config struct {
 	// this is the one place unknown names are not an error.
 	Vars map[string]any `yaml:"variables"`
 
-	ApproverGroupIDs []int  `yaml:"approver_group_ids"`
-	RuleName         string `yaml:"rule_name"`
-	AutoMerge        *bool  `yaml:"auto_merge"`
-	Squash           *bool  `yaml:"squash"`
+	ApproverGroupIDs []GroupID `yaml:"approver_group_ids"`
+	RuleName         string    `yaml:"rule_name"`
+	AutoMerge        *bool     `yaml:"auto_merge"`
+	Squash           *bool     `yaml:"squash"`
 
 	// Path is where this config was read from, empty when none was found.
 	// Callers guard it: a config that can rewrite the rules judging a change
 	// has to be looked at by a person when it changes.
 	Path string `yaml:"-"`
+}
+
+// GroupID is a GitLab group id.
+//
+// It reads a quoted number as well as a bare one. The same ids travel as
+// BLASTDOOR_APPROVER_GROUP_IDS, where everything is a string, and YAML quotes
+// a number the moment it grows a comment or is copied out of a CI variable —
+// so `- "15685"` is the same statement as `- 15685`, and refusing it would be
+// pedantry over an id that is not ambiguous.
+//
+// A name is still an error: GitLab's API takes the numeric id, so a path like
+// "operations/sre" would be accepted here and then fail at the gate, which is
+// the wrong end of the pipeline to find out.
+type GroupID int
+
+// UnmarshalYAML accepts a number written either way.
+func (g *GroupID) UnmarshalYAML(node *yaml.Node) error {
+	if node.Kind != yaml.ScalarNode {
+		return typeError(node, "want a group id, got %s", nodeKind(node))
+	}
+	n, err := strconv.Atoi(strings.TrimSpace(node.Value))
+	if err != nil {
+		return typeError(node, "%q is not a group id: use the numeric id from the group's page, not its path", node.Value)
+	}
+	*g = GroupID(n)
+	return nil
+}
+
+// typeError reports a bad value the way yaml reports its own, so it joins the
+// rest of the file's errors and namedTypeErrors can attribute it to the key
+// that owns the line. An ordinary error returned from an unmarshaler aborts
+// the decode instead, and the reader fixes one line per run.
+func typeError(node *yaml.Node, format string, args ...any) error {
+	return &yaml.TypeError{Errors: []string{
+		fmt.Sprintf("line %d: %s", node.Line, fmt.Sprintf(format, args...)),
+	}}
+}
+
+// nodeKind names a node for an error message, in the reader's terms.
+func nodeKind(node *yaml.Node) string {
+	switch node.Kind {
+	case yaml.SequenceNode:
+		return "a list"
+	case yaml.MappingNode:
+		return "a mapping"
+	default:
+		return "something else"
+	}
 }
 
 // Source is where one layer of policy comes from.

@@ -143,6 +143,10 @@ variables:
   max_partitions: 32
 ```
 
+That is the useful half of it. Every key blastdoor understands, with what each
+one does and defaults to, is in
+[examples/blastdoor.yml](examples/blastdoor.yml).
+
 Blastdoor reads it from the directory it runs in. There is no search upwards
 and no per-directory config: the file that judges a change must be one a
 reviewer can find.
@@ -186,6 +190,55 @@ Two things do not follow that rule, both on purpose:
 Because guards are an override, a pipeline that passes no `--guard-path` lets
 the repository decide what is guarded. The GitLab template always passes one;
 see [docs/hardening.md](docs/hardening.md) if you wire the commands up yourself.
+
+### Environment
+
+A variable is a flag default and nothing more, so the same rule still decides
+every setting: **the flag if it was given, otherwise the variable, otherwise
+the config, otherwise the default.** Only what a repository's own config cannot
+carry is wired this way — a credential, and what the pipeline already knows
+about itself.
+
+| Variable | Used by | Sets |
+|---|---|---|
+| `BLASTDOOR_CONFIG` | all | `--config`, for a job that cannot choose its working directory |
+| `BLASTDOOR_GITLAB_TOKEN` | `gate` | `--token` — a token with the `api` scope |
+| `GITLAB_TOKEN` | `gate` | `--token`, read only when `BLASTDOOR_GITLAB_TOKEN` is unset |
+| `BLASTDOOR_APPROVER_GROUP_IDS` | `gate` | `--approver-group-id`, comma-separated group ids |
+
+`BLASTDOOR_APPROVER_GROUP_IDS` is the one variable that outranks the config
+rather than merely filling a flag in: a branch naming its own approver group in
+`.blastdoor.yml` is a branch approving itself, so the pipeline's list wins over
+the repository's.
+
+GitLab sets the rest itself, and blastdoor reads them so a job needs no flags
+to say where it is running:
+
+| Variable | Used by | Sets |
+|---|---|---|
+| `CI_MERGE_REQUEST_DIFF_BASE_SHA` | `detect`, `plan`, `eval` | the base of the diff on a merge request pipeline |
+| `CI_DEFAULT_BRANCH` | `detect`, `plan`, `eval` | the branch to take the merge base with on a branch pipeline (default `main`) |
+| `CI_MERGE_REQUEST_IID` | `gate` | `--mr-iid` |
+| `CI_COMMIT_BRANCH` | `gate` | `--branch`, used to find the open merge request |
+| `CI_PROJECT_ID` | `gate` | `--project-id` |
+| `CI_API_V4_URL` | `gate` | `--api-url` (default `https://gitlab.com/api/v4`) |
+
+`eval` writes the verdict back out to `blastdoor.env` — `BLASTDOOR_VERDICT`,
+`BLASTDOOR_UNIT_COUNT`, `BLASTDOOR_PASS_COUNT`, `BLASTDOOR_REVIEW_COUNT`,
+`BLASTDOOR_DENY_COUNT` — which the GitLab template publishes as a dotenv report
+so a later job can branch on the outcome without parsing `report.json`.
+
+Everything else in the environment is handed to the tool being run, which is
+how provider and backend credentials reach it. The two exceptions are
+`MISE_SAFE=1` and `MISE_YES=1`, which blastdoor sets for every mise invocation
+and a repository cannot unset — see
+[Terraform, OpenTofu, Terragrunt](#terraform-opentofu-terragrunt).
+
+The other `BLASTDOOR_*` names in
+[ci/gitlab/blastdoor.yml](ci/gitlab/blastdoor.yml) — `BLASTDOOR_IMAGE`,
+`BLASTDOOR_ROOT`, `BLASTDOOR_GUARD_PATHS` and the rest — belong to the
+template, not to blastdoor: the jobs turn them into flags on the command line.
+The binary never reads them, so setting one outside those jobs does nothing.
 
 ### Layered policies
 
@@ -286,7 +339,8 @@ include:
 stages: [plan, risk]
 ```
 
-Set `BLASTDOOR_GITLAB_TOKEN` to a token with the `api` scope. `gate` approves a
+Set `BLASTDOOR_GITLAB_TOKEN` to a token with the `api` scope; the rest of the
+pipeline's variables are in [Environment](#environment). `gate` approves a
 passing merge request, requires an approval on `review`, and on `deny` also
 fails the job. A 401/403 fails the job rather than being mistaken for "nothing
 to gate".

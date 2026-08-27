@@ -77,7 +77,7 @@ squash: false
 	if !reflect.DeepEqual(got.Ignore, []string{"ansible", "**/README.md"}) {
 		t.Errorf("ignore = %v", got.Ignore)
 	}
-	if !reflect.DeepEqual(got.ApproverGroupIDs, []int{12, 34}) {
+	if !reflect.DeepEqual(got.ApproverGroupIDs, []GroupID{12, 34}) {
 		t.Errorf("approver_group_ids = %v", got.ApproverGroupIDs)
 	}
 	if got.RequireCoverage == nil || !*got.RequireCoverage {
@@ -90,6 +90,31 @@ squash: false
 	// squash flag defaults to true, so a config saying false must win.
 	if got.Squash == nil || *got.Squash {
 		t.Errorf("squash = %v", got.Squash)
+	}
+}
+
+// A group id reads the same quoted or bare. The ids also travel as
+// BLASTDOOR_APPROVER_GROUP_IDS, where everything is a string, and YAML quotes
+// a number as soon as it is copied out of a CI variable or grows a comment.
+func TestLoadReadsQuotedGroupIDs(t *testing.T) {
+	got, err := Load(write(t, "approver_group_ids:\n  - \"15685\" # Operations SRE\n  - 34\n"))
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if !reflect.DeepEqual(got.ApproverGroupIDs, []GroupID{15685, 34}) {
+		t.Errorf("approver_group_ids = %v, want [15685 34]", got.ApproverGroupIDs)
+	}
+}
+
+// A group path is not a group id. Accepting it here would fail at the gate
+// instead, which is the wrong end of the pipeline to find out.
+func TestLoadRejectsNonNumericGroupID(t *testing.T) {
+	_, err := Load(write(t, "approver_group_ids:\n  - operations/sre\n"))
+	if err == nil {
+		t.Fatal("Load: want an error for a group path")
+	}
+	if !strings.Contains(err.Error(), "approver_group_ids") || !strings.Contains(err.Error(), "operations/sre") {
+		t.Errorf("error should name the key and the value: %v", err)
 	}
 }
 
