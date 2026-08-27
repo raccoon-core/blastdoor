@@ -123,6 +123,15 @@ blastdoor:eval:
 # pass -> approves; review -> requires a human approval; deny -> also fails the
 # job, so the pipeline is red. Add --auto-merge to let passing changes merge on
 # their own.
+#
+# --approval-rule is what makes review mean something: without it the gate
+# posts the summary and fails on deny, but nothing stops a reviewed change
+# going in unapproved. It is off in the binary and passed here, the same way
+# --guard-path is, because a template that gates is the point of the template.
+#
+# Add --reviewers to also put the approver groups' members on the merge request
+# as reviewers, so they are told there is something to look at. It expands each
+# group into its members, so the token has to be able to read them.
 blastdoor:gate:
   stage: risk
   image: $BLASTDOOR_IMAGE
@@ -132,4 +141,4 @@ blastdoor:gate:
   rules:
     - !reference [".blastdoor:rules", default]
   script:
-    - blastdoor gate --report "$BLASTDOOR_DIR/report.json" --summary "$BLASTDOOR_DIR/summary.md"
+    - blastdoor gate --report "$BLASTDOOR_DIR/report.json" --summary "$BLASTDOOR_DIR/summary.md" --approval-rule

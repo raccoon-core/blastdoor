@@ -17,18 +17,20 @@ import (
 
 func newGateCmd() *cobra.Command {
 	var (
-		reportPath  string
-		summaryPath string
-		ruleName    string
-		approverIDs []string
-		autoMerge   bool
-		squash      bool
-		mrIID       int
-		branch      string
-		apiURL      string
-		projectID   string
-		token       string
-		skipNote    bool
+		reportPath   string
+		summaryPath  string
+		ruleName     string
+		approverIDs  []string
+		approvalRule bool
+		reviewers    bool
+		autoMerge    bool
+		squash       bool
+		mrIID        int
+		branch       string
+		apiURL       string
+		projectID    string
+		token        string
+		skipNote     bool
 	)
 
 	cmd := &cobra.Command{
@@ -37,16 +39,22 @@ func newGateCmd() *cobra.Command {
 		Long: `Reads the report written by 'blastdoor eval' and acts on the merge request.
 
   pass    approves it, and with --auto-merge queues the merge
-  review  requires a human approval
-  deny    requires an approval and fails the job, so the pipeline is red too —
-          a denial is settled by changing the plan or the policy, not by
-          approving it
+  review  withdraws blastdoor's own earlier approval
+  deny    the same, and fails the job, so the pipeline is red too — a denial is
+          settled by changing the plan or the policy, not by approving it
+
+On review and deny, --approval-rule additionally puts an approval rule on the
+merge request, so a person has to approve before it can merge, and --reviewers
+puts the approver groups' members on it as reviewers. Both write to the merge
+request, so both are off until asked for.
 
 A 401 or 403 from GitLab fails the command: a token that cannot reach the API
 must not be mistaken for a change that needs no gate.`,
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			ruleName = pickString(cmd, "rule-name", ruleName, cfg().RuleName)
+			approvalRule = pickBool(cmd, "approval-rule", approvalRule, cfg().ApprovalRule)
+			reviewers = pickBool(cmd, "reviewers", reviewers, cfg().Reviewers)
 			autoMerge = pickBool(cmd, "auto-merge", autoMerge, cfg().AutoMerge)
 			squash = pickBool(cmd, "squash", squash, cfg().Squash)
 			// The approver list defaults from a CI variable rather than from
@@ -101,18 +109,30 @@ must not be mistaken for a change that needs no gate.`,
 				if err != nil {
 					return err
 				}
-				if len(groups) == 0 {
-					fmt.Fprintln(cmd.ErrOrStderr(), "warning: no --approver-group-id given, so the rule accepts any eligible approver")
-				}
 				// Withdraw any approval blastdoor gave when this merge
 				// request still passed. Without this, a push that makes the
 				// change worse is waved through by the approval the previous,
-				// safer push earned.
+				// safer push earned. Independent of --approval-rule: it
+				// undoes something blastdoor itself did.
 				if err := client.Unapprove(ctx, iid); err != nil {
 					return fmt.Errorf("withdrawing the earlier approval on !%d: %w", iid, err)
 				}
-				if err := client.SetApprovalRule(ctx, iid, ruleName, 1, groups); err != nil {
-					return fmt.Errorf("setting approval rule %q: %w", ruleName, err)
+
+				if approvalRule {
+					if len(groups) == 0 {
+						fmt.Fprintln(cmd.ErrOrStderr(), "warning: no --approver-group-id given, so the rule accepts any eligible approver")
+					}
+					if err := client.SetApprovalRule(ctx, iid, ruleName, 1, groups); err != nil {
+						return fmt.Errorf("setting approval rule %q: %w", ruleName, err)
+					}
+				}
+
+				// After the rule, so a merge request is already gated even if
+				// naming reviewers then fails.
+				if reviewers {
+					if err := addGroupReviewers(ctx, client, cmd, iid, groups); err != nil {
+						return err
+					}
 				}
 
 				if rep.Verdict == policy.Deny {
@@ -123,8 +143,17 @@ must not be mistaken for a change that needs no gate.`,
 					return fmt.Errorf("denied by policy: %d change(s) not allowed", rep.Counts[policy.Deny])
 				}
 
-				fmt.Fprintf(out, "review required: %d change(s) — !%d now needs an approval via rule %q\n",
-					rep.Counts[policy.Review], iid, ruleName)
+				if approvalRule {
+					fmt.Fprintf(out, "review required: %d change(s) — !%d now needs an approval via rule %q\n",
+						rep.Counts[policy.Review], iid, ruleName)
+					return nil
+				}
+				// Say what was not done. Without the rule the summary is the
+				// whole gate — nothing stops the merge request going in
+				// unapproved — and a reader should not have to infer that
+				// from silence.
+				fmt.Fprintf(out, "review required: %d change(s) on !%d — no approval rule set (--approval-rule is off)\n",
+					rep.Counts[policy.Review], iid)
 				return nil
 			}
 
@@ -160,6 +189,8 @@ must not be mistaken for a change that needs no gate.`,
 	cmd.Flags().StringVar(&summaryPath, "summary", ".blastdoor/summary.md", "summary.md to post as a note")
 	cmd.Flags().StringVar(&ruleName, "rule-name", "blastdoor", "name of the approval rule to manage")
 	cmd.Flags().StringArrayVar(&approverIDs, "approver-group-id", splitList(os.Getenv("BLASTDOOR_APPROVER_GROUP_IDS")), "GitLab group id allowed to approve (repeatable)")
+	cmd.Flags().BoolVar(&approvalRule, "approval-rule", false, "on review and deny, require an approval via a merge request approval rule")
+	cmd.Flags().BoolVar(&reviewers, "reviewers", false, "on review and deny, add the approver groups' members as reviewers")
 	cmd.Flags().BoolVar(&autoMerge, "auto-merge", false, "queue the merge when every change passes")
 	cmd.Flags().BoolVar(&squash, "squash", true, "squash commits when auto-merging")
 	cmd.Flags().IntVar(&mrIID, "mr-iid", envInt("CI_MERGE_REQUEST_IID", 0), "merge request IID (default $CI_MERGE_REQUEST_IID)")
@@ -227,6 +258,44 @@ func parseGroupIDs(values []string) ([]int, error) {
 		ids = append(ids, n)
 	}
 	return ids, nil
+}
+
+// addGroupReviewers puts the members of the approver groups on the merge
+// request, so the people who can clear it are told there is something to
+// clear.
+//
+// GitLab reviewers are users, not groups, so each group is expanded. Members
+// already reviewing, and the author, are left out by the client.
+func addGroupReviewers(ctx context.Context, client *gitlabapi.Client, cmd *cobra.Command, iid int, groups []int) error {
+	if len(groups) == 0 {
+		fmt.Fprintln(cmd.ErrOrStderr(), "warning: --reviewers needs --approver-group-id to know who to add — nobody was added")
+		return nil
+	}
+
+	var users []int
+	for _, group := range groups {
+		members, err := client.GroupMembers(ctx, group)
+		if err != nil {
+			return fmt.Errorf("adding reviewers: %w", err)
+		}
+		// An empty group is worth saying out loud: it looks identical to a
+		// working configuration from the merge request's side.
+		if len(members) == 0 {
+			fmt.Fprintf(cmd.ErrOrStderr(), "warning: group %d has no active members to add as reviewers\n", group)
+		}
+		users = append(users, members...)
+	}
+
+	added, err := client.AddReviewers(ctx, iid, users)
+	if err != nil {
+		return fmt.Errorf("adding reviewers to !%d: %w", iid, err)
+	}
+	if len(added) == 0 {
+		fmt.Fprintf(cmd.OutOrStdout(), "reviewers already on !%d — none added\n", iid)
+		return nil
+	}
+	fmt.Fprintf(cmd.OutOrStdout(), "added %d reviewer(s) to !%d\n", len(added), iid)
+	return nil
 }
 
 // splitList parses a comma-separated environment variable.

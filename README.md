@@ -74,8 +74,14 @@ See [examples/](examples/) for a worked policy and a plan per scenario, and
 | Verdict | Meaning | What the gate does |
 |---|---|---|
 | `pass` | A rule allows it | Approves, and with `--auto-merge` queues the merge |
-| `review` | A rule wants a person | Requires a human approval |
-| `deny` | A rule forbids it, or no rule matched it | Requires approval **and** fails the job, so the pipeline is red |
+| `review` | A rule wants a person | Posts the summary, and with `--approval-rule` requires a human approval |
+| `deny` | A rule forbids it, or no rule matched it | The same **and** fails the job, so the pipeline is red |
+
+The approval rule is opt-in, because it writes to the merge request. Without
+`--approval-rule` the gate still posts the summary, still fails the job on a
+denial, and still withdraws any approval it gave an earlier and safer push —
+but nothing stops a reviewed change going in unapproved. The GitLab template
+passes it, the same way it passes `--guard-path`.
 
 The plan takes the worst verdict of any change in it: one change a policy
 forbids is not offset by nine it allows.
@@ -344,6 +350,24 @@ pipeline's variables are in [Environment](#environment). `gate` approves a
 passing merge request, requires an approval on `review`, and on `deny` also
 fails the job. A 401/403 fails the job rather than being mistaken for "nothing
 to gate".
+
+### Telling people there is something to look at
+
+`--reviewers` puts the approver groups' members on the merge request as
+reviewers when the verdict is `review` or `deny`, so the people who can clear
+it are told there is something to clear.
+
+GitLab reviewers are users rather than groups, so each group in
+`approver_group_ids` is expanded into its **active direct members** — the token
+has to be able to read them. Membership inherited from a parent group is
+deliberately not followed: naming one team as an approver should not quietly
+put the whole organisation on a merge request. Whoever is already reviewing
+stays, since GitLab's `reviewer_ids` replaces the list rather than appending to
+it, and the author is never added to review their own change.
+
+A merge request that already has everyone is left untouched, so re-running a
+pipeline does not show up as an edit. It runs after the approval rule, so a
+change is gated even if naming reviewers then fails.
 
 ### Merge request or branch
 

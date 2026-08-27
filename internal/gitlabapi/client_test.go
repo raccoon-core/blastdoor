@@ -4,9 +4,12 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"reflect"
+	"strings"
 	"testing"
 )
 
@@ -232,5 +235,115 @@ func TestUnapproveStillFailsOnForbidden(t *testing.T) {
 	})
 	if err := client.Unapprove(context.Background(), 7); err == nil {
 		t.Error("a 403 was swallowed")
+	}
+}
+
+// A blocked member cannot review, and GitLab rejects an update naming one.
+func TestGroupMembersKeepsOnlyActive(t *testing.T) {
+	client, got := server(t, func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte(`[
+			{"id": 1, "state": "active"},
+			{"id": 2, "state": "blocked"},
+			{"id": 3, "state": "awaiting"},
+			{"id": 4, "state": "active"}
+		]`))
+	})
+
+	ids, err := client.GroupMembers(context.Background(), 15685)
+	if err != nil {
+		t.Fatalf("GroupMembers: %v", err)
+	}
+	if !reflect.DeepEqual(ids, []int{1, 4}) {
+		t.Errorf("ids = %v, want [1 4]", ids)
+	}
+	if !strings.HasPrefix((*got)[0].path, "/groups/15685/members?") {
+		t.Errorf("path = %q", (*got)[0].path)
+	}
+	// Not /members/all: inherited membership would walk up the hierarchy and
+	// put the whole organisation on the merge request.
+	if strings.Contains((*got)[0].path, "/members/all") {
+		t.Error("inherited members should not be read")
+	}
+}
+
+// A group larger than one page must not lose its tail: the members who fall
+// off the end are simply never told.
+func TestGroupMembersReadsEveryPage(t *testing.T) {
+	client, got := server(t, func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Query().Get("page") == "1" {
+			var b strings.Builder
+			b.WriteString("[")
+			for i := 1; i <= 100; i++ {
+				if i > 1 {
+					b.WriteString(",")
+				}
+				fmt.Fprintf(&b, `{"id": %d, "state": "active"}`, i)
+			}
+			b.WriteString("]")
+			_, _ = io.WriteString(w, b.String())
+			return
+		}
+		_, _ = w.Write([]byte(`[{"id": 101, "state": "active"}]`))
+	})
+
+	ids, err := client.GroupMembers(context.Background(), 1)
+	if err != nil {
+		t.Fatalf("GroupMembers: %v", err)
+	}
+	if len(ids) != 101 || ids[100] != 101 {
+		t.Errorf("got %d ids, last %v — want 101 ids ending at 101", len(ids), ids[len(ids)-1])
+	}
+	if len(*got) != 2 {
+		t.Errorf("made %d requests, want 2", len(*got))
+	}
+}
+
+// reviewer_ids replaces the list, so anyone already reviewing has to be sent
+// back with it. The author is not a reviewer of their own change.
+func TestAddReviewersKeepsExistingAndSkipsAuthor(t *testing.T) {
+	client, got := server(t, func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodGet {
+			_, _ = w.Write([]byte(`{"iid": 7, "author": {"id": 9}, "reviewers": [{"id": 3}]}`))
+			return
+		}
+		_, _ = w.Write([]byte(`{}`))
+	})
+
+	added, err := client.AddReviewers(context.Background(), 7, []int{3, 9, 11})
+	if err != nil {
+		t.Fatalf("AddReviewers: %v", err)
+	}
+	if !reflect.DeepEqual(added, []int{11}) {
+		t.Errorf("added = %v, want [11]", added)
+	}
+
+	if len(*got) != 2 {
+		t.Fatalf("made %d requests, want a read and a write", len(*got))
+	}
+	put := (*got)[1]
+	if put.method != http.MethodPut || put.path != "/projects/42/merge_requests/7" {
+		t.Errorf("%s %s", put.method, put.path)
+	}
+	if !reflect.DeepEqual(put.body["reviewer_ids"], []any{float64(3), float64(11)}) {
+		t.Errorf("reviewer_ids = %v, want the existing reviewer kept and 11 added", put.body["reviewer_ids"])
+	}
+}
+
+// Re-running a pipeline should not rewrite a merge request that is already
+// right: every push would otherwise show up as an edit.
+func TestAddReviewersWritesNothingWhenAlreadyPresent(t *testing.T) {
+	client, got := server(t, func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte(`{"iid": 7, "author": {"id": 9}, "reviewers": [{"id": 3}, {"id": 11}]}`))
+	})
+
+	added, err := client.AddReviewers(context.Background(), 7, []int{3, 11})
+	if err != nil {
+		t.Fatalf("AddReviewers: %v", err)
+	}
+	if added != nil {
+		t.Errorf("added = %v, want none", added)
+	}
+	if len(*got) != 1 {
+		t.Errorf("made %d requests, want only the read", len(*got))
 	}
 }

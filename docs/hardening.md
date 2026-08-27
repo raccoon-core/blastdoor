@@ -116,8 +116,12 @@ execution.
 
 ### GitLab settings the gate depends on
 
-The approval rule blastdoor creates is only as strong as the project settings
-around it:
+First there has to be a rule at all: `gate` writes one only when it is passed
+`--approval-rule`. Without it a `review` verdict posts a summary and nothing
+else, and the change can merge unapproved. The GitLab template passes it; a
+pipeline wired up by hand has to.
+
+The rule is then only as strong as the project settings around it:
 
 | Setting | Why |
 |---|---|
@@ -155,7 +159,8 @@ prefer a dedicated bot account over a person's token.
 1. Policies in a separate, protected repository; fetch them in the eval job.
 2. Jobs in a compliance pipeline, not the project's `.gitlab-ci.yml`.
 3. `--guard-path` covering anything policy-adjacent that does stay in-repo.
-4. `BLASTDOOR_APPROVER_GROUP_IDS` set to a real group of people.
+4. `--approval-rule` passed by the gate job, and
+   `BLASTDOOR_APPROVER_GROUP_IDS` set to a real group of people.
 5. The four GitLab settings above turned on.
 6. Plan job on an isolated runner with short-lived credentials.
 7. `--auto-merge` off until you have watched the verdicts on real changes for a

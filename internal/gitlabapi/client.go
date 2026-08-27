@@ -102,9 +102,25 @@ func (c *Client) mrPath(iid int, suffix string) string {
 	return fmt.Sprintf("/projects/%s/merge_requests/%d%s", url.PathEscape(c.ProjectID), iid, suffix)
 }
 
+// User is the subset of a GitLab user blastdoor reads.
+type User struct {
+	ID int `json:"id"`
+}
+
 // MergeRequest is the subset of fields blastdoor reads.
 type MergeRequest struct {
-	IID int `json:"iid"`
+	IID       int    `json:"iid"`
+	Author    User   `json:"author"`
+	Reviewers []User `json:"reviewers"`
+}
+
+// GetMergeRequest reads one merge request.
+func (c *Client) GetMergeRequest(ctx context.Context, iid int) (MergeRequest, error) {
+	var mr MergeRequest
+	if err := c.do(ctx, http.MethodGet, c.mrPath(iid, ""), nil, &mr); err != nil {
+		return MergeRequest{}, err
+	}
+	return mr, nil
 }
 
 // FindMergeRequestForBranch returns the highest open MR IID for a source
@@ -174,6 +190,86 @@ func (c *Client) SetApprovalRule(ctx context.Context, iid int, name string, appr
 		}
 	}
 	return c.do(ctx, http.MethodPost, c.mrPath(iid, "/approval_rules"), body, nil)
+}
+
+// GroupMember is the subset of a group membership blastdoor reads.
+type GroupMember struct {
+	ID    int    `json:"id"`
+	State string `json:"state"`
+}
+
+// GroupMembers returns the ids of a group's active direct members.
+//
+// Direct members, not /members/all: inherited membership walks up the group
+// hierarchy, so naming one team as an approver could quietly put the whole
+// organisation on a merge request. Blocked and pending members are dropped —
+// they cannot review, and GitLab rejects an update naming one.
+func (c *Client) GroupMembers(ctx context.Context, groupID int) ([]int, error) {
+	const perPage = 100
+
+	var ids []int
+	for page := 1; ; page++ {
+		q := url.Values{}
+		q.Set("per_page", strconv.Itoa(perPage))
+		q.Set("page", strconv.Itoa(page))
+
+		var members []GroupMember
+		path := fmt.Sprintf("/groups/%d/members?%s", groupID, q.Encode())
+		if err := c.do(ctx, http.MethodGet, path, nil, &members); err != nil {
+			return nil, fmt.Errorf("reading members of group %d: %w", groupID, err)
+		}
+
+		for _, m := range members {
+			if m.State != "" && m.State != "active" {
+				continue
+			}
+			ids = append(ids, m.ID)
+		}
+
+		// A short page is the last one.
+		if len(members) < perPage {
+			return ids, nil
+		}
+	}
+}
+
+// AddReviewers puts users on the merge request's reviewer list and returns the
+// ones it actually added.
+//
+// GitLab's reviewer_ids replaces the list rather than appending to it, so the
+// current reviewers are read first and kept: somebody who put themselves on a
+// merge request must not be dropped by the next pipeline. The author is
+// skipped — a person does not review their own change.
+func (c *Client) AddReviewers(ctx context.Context, iid int, userIDs []int) ([]int, error) {
+	mr, err := c.GetMergeRequest(ctx, iid)
+	if err != nil {
+		return nil, err
+	}
+
+	have := make(map[int]bool, len(mr.Reviewers))
+	all := make([]int, 0, len(mr.Reviewers)+len(userIDs))
+	for _, r := range mr.Reviewers {
+		have[r.ID] = true
+		all = append(all, r.ID)
+	}
+
+	var added []int
+	for _, id := range userIDs {
+		if have[id] || id == mr.Author.ID {
+			continue
+		}
+		have[id] = true
+		added = append(added, id)
+		all = append(all, id)
+	}
+	if len(added) == 0 {
+		return nil, nil
+	}
+
+	if err := c.do(ctx, http.MethodPut, c.mrPath(iid, ""), map[string]any{"reviewer_ids": all}, nil); err != nil {
+		return nil, err
+	}
+	return added, nil
 }
 
 // Approve approves the merge request as the token's user. GitLab answers 401

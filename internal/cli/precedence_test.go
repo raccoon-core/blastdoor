@@ -205,3 +205,37 @@ func TestMissingNamedConfigFailsTheCommand(t *testing.T) {
 		t.Fatal("want the command to fail when --config does not exist")
 	}
 }
+
+// The two gate switches that write to the merge request are opt-in, so a
+// project turns them on in its config rather than in every job.
+func TestConfigTurnsOnTheGateSwitches(t *testing.T) {
+	withConfig(t, "approval_rule: true\nreviewers: true\n")
+
+	cmd := newGateCmd()
+	if err := cmd.Flags().Parse(nil); err != nil {
+		t.Fatal(err)
+	}
+	if !pickBool(cmd, "approval-rule", false, cfg().ApprovalRule) {
+		t.Error("approval_rule should come from the config")
+	}
+	if !pickBool(cmd, "reviewers", false, cfg().Reviewers) {
+		t.Error("reviewers should come from the config")
+	}
+}
+
+// Off is the default, and a config that says nothing must not turn either on:
+// both write to somebody's merge request.
+func TestGateSwitchesAreOffByDefault(t *testing.T) {
+	withConfig(t, "")
+
+	cmd := newGateCmd()
+	if err := cmd.Flags().Parse(nil); err != nil {
+		t.Fatal(err)
+	}
+	if pickBool(cmd, "approval-rule", false, cfg().ApprovalRule) {
+		t.Error("approval-rule defaulted to on")
+	}
+	if pickBool(cmd, "reviewers", false, cfg().Reviewers) {
+		t.Error("reviewers defaulted to on")
+	}
+}

@@ -140,8 +140,17 @@ type Config struct {
 
 	ApproverGroupIDs []GroupID `yaml:"approver_group_ids"`
 	RuleName         string    `yaml:"rule_name"`
-	AutoMerge        *bool     `yaml:"auto_merge"`
-	Squash           *bool     `yaml:"squash"`
+
+	// ApprovalRule turns on the merge request approval rule, and Reviewers
+	// puts the approver groups' members on the merge request. Both are off
+	// until asked for: they write to the merge request, and a project that
+	// only wants the summary and a red pipeline on deny should not have
+	// blastdoor rearranging its approvals.
+	ApprovalRule *bool `yaml:"approval_rule"`
+	Reviewers    *bool `yaml:"reviewers"`
+
+	AutoMerge *bool `yaml:"auto_merge"`
+	Squash    *bool `yaml:"squash"`
 
 	// Path is where this config was read from, empty when none was found.
 	// Callers guard it: a config that can rewrite the rules judging a change

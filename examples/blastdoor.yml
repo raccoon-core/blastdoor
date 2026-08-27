@@ -141,7 +141,27 @@ ignore:
 # The gate
 # ---------------------------------------------------------------------------
 
-# Name of the GitLab approval rule blastdoor manages.
+# On review and deny, put an approval rule on the merge request, so a person
+# has to approve before it can merge. Off by default: it writes to the merge
+# request, and a project may want only the summary and a red pipeline on deny.
+#
+# Without it the gate still posts the summary, still fails the job on deny, and
+# still withdraws any approval blastdoor itself gave — but nothing stops a
+# reviewed change going in unapproved. Turn it on if the gate is meant to bite.
+# (--approval-rule, default false)
+approval_rule: true
+
+# On review and deny, add the members of the approver groups below to the merge
+# request as reviewers, so the people who can clear it are told there is
+# something to clear. Off by default. (--reviewers, default false)
+#
+# GitLab reviewers are users, not groups, so each group is expanded into its
+# active direct members — the token needs to be able to read that. Whoever is
+# already reviewing stays, and the author is never added. A large group means a
+# large reviewer list; name a small one, or leave this off.
+reviewers: true
+
+# Name of the GitLab approval rule blastdoor manages, when approval_rule is on.
 # (--rule-name, default "blastdoor")
 rule_name: blastdoor
 
