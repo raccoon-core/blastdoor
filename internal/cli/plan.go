@@ -14,15 +14,16 @@ import (
 
 func newPlanCmd() *cobra.Command {
 	var (
-		units     []string
-		unitsFile string
-		root      string
-		baseRef   string
-		headRef   string
-		outDir    string
-		tool      string
-		tgTFPath  string
-		manager   string
+		units       []string
+		unitsFile   string
+		root        string
+		baseRef     string
+		headRef     string
+		outDir      string
+		tool        string
+		tgTFPath    string
+		manager     string
+		environment string
 	)
 
 	cmd := &cobra.Command{
@@ -93,6 +94,9 @@ in each unit.`,
 						return fmt.Errorf("writing %s: %w", engineFile, err)
 					}
 				}
+				if err := writeEnvironmentFile(dest, environment); err != nil {
+					return err
+				}
 				fmt.Fprintf(cmd.OutOrStdout(), "%s\n", out)
 			}
 			return nil
@@ -108,6 +112,7 @@ in each unit.`,
 	cmd.Flags().StringVar(&tool, "tool", "auto", "auto, tofu, terraform or terragrunt")
 	cmd.Flags().StringVar(&tgTFPath, "terragrunt-tf-path", "auto", "binary Terragrunt wraps: auto, tofu or terraform")
 	cmd.Flags().StringVar(&manager, "manager", "auto", "version manager: auto, tenv, mise or none")
+	cmd.Flags().StringVar(&environment, "environment", "", "environment these units belong to, recorded beside each plan for 'blastdoor eval' to fold into a deployment method")
 
 	return cmd
 }
@@ -136,4 +141,28 @@ func resolveUnits(units []string, unitsFile, root, baseRef, headRef string) ([]s
 	}
 
 	return detect.Changed(detect.Options{Root: root, BaseRef: baseRef, HeadRef: headRef})
+}
+
+// writeEnvironmentFile records which environment a unit belongs to, beside its
+// plan.
+//
+// Per unit rather than once per run, for the same reason engine.txt is: eval
+// runs in another job, and when plans are split across a parallel matrix their
+// artifacts are merged. One file per unit merges; one file per run collides,
+// and the survivor is whichever leg finished last.
+//
+// An empty name writes nothing. Without a deployment method wish the whole
+// feature is off, and a file saying nothing is worse than no file.
+func writeEnvironmentFile(dest, environment string) error {
+	if environment == "" {
+		return nil
+	}
+	if err := os.MkdirAll(dest, 0o755); err != nil {
+		return fmt.Errorf("creating %s: %w", dest, err)
+	}
+	path := filepath.Join(dest, "environment.txt")
+	if err := os.WriteFile(path, []byte(environment+"\n"), 0o644); err != nil {
+		return fmt.Errorf("writing %s: %w", path, err)
+	}
+	return nil
 }
