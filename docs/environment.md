@@ -12,11 +12,14 @@ about itself.
 | `BLASTDOOR_GITLAB_TOKEN` | `gate` | `--token` — a token with the `api` scope |
 | `GITLAB_TOKEN` | `gate` | `--token`, read only when `BLASTDOOR_GITLAB_TOKEN` is unset |
 | `BLASTDOOR_APPROVER_GROUP_IDS` | `gate` | `--approver-group-id`, comma-separated group ids |
+| `BLASTDOOR_DEPLOYMENT_METHOD_WISH` | `eval` | `--deployment-method-wish`, per-environment ceiling, e.g. `int=auto,stg=auto,prd=manual` |
 
-`BLASTDOOR_APPROVER_GROUP_IDS` is the one variable that outranks the config
-rather than merely filling a flag in: a branch naming its own approver group in
-`.blastdoor.yml` is a branch approving itself, so the pipeline's list wins over
-the repository's.
+`BLASTDOOR_APPROVER_GROUP_IDS` and `BLASTDOOR_DEPLOYMENT_METHOD_WISH` are the
+two variables that outrank the config rather than merely filling a flag in: a
+branch naming its own approver group, or its own deployment method, in
+`.blastdoor.yml` is a branch approving itself — the config decoder rejects an
+`environments:` key outright rather than let the wish in by that door — so the
+pipeline's statement wins over the repository's for both.
 
 ## What GitLab sets itself
 
@@ -39,6 +42,13 @@ to say where it is running:
 `BLASTDOOR_DENY_COUNT` — which the GitLab template publishes as a dotenv report
 so a later job can branch on the outcome without parsing `report.json`.
 
+When `--deployment-method-wish` names any environments, `eval` also writes one
+`BLASTDOOR_DEPLOY_<ENV>` key per environment named — `auto`, `manual` or
+`none` — uppercased from the wish's own names. This dotenv is a record for
+humans and later tooling to read; it cannot drive a job's `when:` itself. See
+[GitLab](gitlab.md#the-deployment-method) for why, and for the generated
+pipeline that is the actual mechanism.
+
 ## Everything else
 
 Everything else in the environment is handed to the tool being run, which is
@@ -47,9 +57,18 @@ how provider and backend credentials reach it. The two exceptions are
 and a repository cannot unset — see
 [Terraform, OpenTofu, Terragrunt](toolchain.md).
 
-The other `BLASTDOOR_*` names in
+Most other `BLASTDOOR_*` names in
 [ci/gitlab/blastdoor.yml](https://github.com/raccoon-core/blastdoor/blob/main/ci/gitlab/blastdoor.yml)
 — `BLASTDOOR_IMAGE`, `BLASTDOOR_ROOT`, `BLASTDOOR_GUARD_PATHS` and the rest —
 belong to the template, not to blastdoor: the jobs turn them into flags on the
-command line. The binary never reads them, so setting one outside those jobs
-does nothing.
+command line, and the binary never reads them itself, so setting one outside
+those jobs does nothing.
+
+`BLASTDOOR_DEPLOYMENT_METHOD_WISH` is the exception, and it is listed in the
+first table above rather than here for exactly that reason: `eval`'s
+`--deployment-method-wish` flag defaults from it directly, so it works even
+when nothing turns it into a flag on the command line.
+`BLASTDOOR_APPLY_INCLUDE` is not an exception despite looking like one — it
+only ever reaches blastdoor as the `--apply-include` flag value the template
+passes; the binary has its own hardcoded default and does not read the
+variable back.

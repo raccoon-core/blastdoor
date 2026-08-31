@@ -79,6 +79,30 @@ generate a job that runs the repository's apply script against an empty unit
 list. `none` says the honest thing instead: no apply job is generated for it
 at all.
 
+### Stating a wish requires the plan job to say which environment it planned
+
+`eval` folds environments from `environment.txt`, which `blastdoor plan`
+writes when it is passed `--environment`. The shipped `blastdoor:plan` job is
+a single job planning a single unit list, and does not pass `--environment` to
+anything by default — there is no environment for it to name. Setting
+`BLASTDOOR_DEPLOYMENT_METHOD_WISH` without also arranging for `plan` to run
+once per environment gets every unit planned with no environment recorded at
+all, and `eval` fails outright rather than guessing one:
+
+```
+blastdoor: unit "<path>" has no environment recorded: pass --environment to
+'blastdoor plan' so it writes one beside the plan
+```
+
+If you see that error after setting a wish, this is why. A project running
+`int`, `stg` and `prd` overrides `blastdoor:plan` in its own `.gitlab-ci.yml`
+with a `parallel:matrix` supplying `ENV`, and a `--units-file` scoped to that
+environment (a `grep` over the full unit list is the usual way to build it) —
+each leg then calls `blastdoor plan --environment "$ENV"` for its own slice.
+The environment split is the consuming project's own pipeline shape, the same
+way its apply command is; the shared template only threads `--environment
+"$ENV"` through so a project that does this has somewhere to plug it in.
+
 To use this, the repository provides `.gitlab/blastdoor-apply.yml` — named by
 `--apply-include` / `BLASTDOOR_APPLY_INCLUDE`, default
 `.gitlab/blastdoor-apply.yml` — containing a hidden `.blastdoor:apply` job: its
