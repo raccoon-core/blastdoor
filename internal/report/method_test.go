@@ -50,6 +50,10 @@ func TestParseWishRejects(t *testing.T) {
 		{"duplicate environment", "int=auto,int=manual"},
 		{"name is not a dotenv key", "my-env=auto"},
 		{"name starts with a digit", "1int=auto"},
+		// ı (U+0131, dotless i) uppercases to ASCII I via strings.ToUpper,
+		// so validating the uppercased form would let it through raw and
+		// then store it unvalidated. Validation must run on the raw name.
+		{"non-ASCII name that uppercases into ASCII", "ı=auto"},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {

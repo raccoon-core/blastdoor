@@ -318,9 +318,14 @@ func collectPlans(planFiles []string, planDir string) ([]planInput, error) {
 
 // writeReport writes the files the CI jobs consume.
 //
-// apply.gitlab-ci.yml is written only when a wish was stated. Without one the
-// whole feature is off, and a pipeline that never asked for it should not find
-// a new artifact it does not know what to do with.
+// apply.gitlab-ci.yml is written whenever a wish was stated — Decide appends
+// an EnvDecision for every wished environment, so len(rep.Environments) > 0
+// is exactly "a wish was stated", including when every one of them resolved
+// to none. That case (the ordinary one for a docs-only or CI-only change)
+// does not need special handling here: WriteApplyYAML itself always produces
+// a file GitLab can build a child pipeline from, writing a single placeholder
+// job when nothing in the change has anything to apply, rather than the
+// jobless include-only file that GitLab refuses to run. See its doc comment.
 func writeReport(rep report.Report, outDir, applyInclude string) error {
 	if err := os.MkdirAll(outDir, 0o755); err != nil {
 		return fmt.Errorf("creating %s: %w", outDir, err)

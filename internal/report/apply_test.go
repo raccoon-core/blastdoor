@@ -70,6 +70,27 @@ func TestWriteApplyYAMLSkipsEnvironmentsWithNothingToApply(t *testing.T) {
 	}
 }
 
+// A GitLab child pipeline needs at least one job, or the trigger job that
+// would run it fails to create it at all. When every environment resolves to
+// none — the ordinary case for a docs-only or CI-only change — the file must
+// still be a pipeline GitLab can build: a single placeholder job, and no
+// include: for a .blastdoor:apply job there is nothing here to extend.
+func TestWriteApplyYAMLPlaceholdersWhenNothingResolvesToApply(t *testing.T) {
+	rep := decided(t, "int=auto,prd=auto", nil)
+
+	text, doc := applyYAML(t, rep)
+
+	if len(doc) != 1 {
+		t.Fatalf("generated pipeline has %d jobs, want exactly 1:\n%s", len(doc), text)
+	}
+	if _, found := doc["blastdoor:nothing-to-apply"]; !found {
+		t.Errorf("no placeholder job in:\n%s", text)
+	}
+	if strings.Contains(text, "include:") {
+		t.Errorf("placeholder pipeline should not include the repository's apply file:\n%s", text)
+	}
+}
+
 func TestWriteApplyYAMLIncludesTheRepositoryJob(t *testing.T) {
 	rep := decided(t, "int=auto", []Unit{
 		{Path: "ops/int/a", Environment: "int", Changes: []policy.Change{change("x", policy.Pass, "fine")}},

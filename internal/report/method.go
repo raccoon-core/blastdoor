@@ -60,7 +60,12 @@ func ParseWish(s string) (Wish, error) {
 		if name == "" {
 			return Wish{}, fmt.Errorf("deployment method wish %q names no environment", entry)
 		}
-		if !dotenvKey.MatchString(strings.ToUpper(name)) {
+		// Validated raw, not uppercased first: strings.ToUpper folds some
+		// non-ASCII runes into ASCII (ı, U+0131, becomes I; ſ, U+017F,
+		// becomes S), which would let a name that fails this regex as
+		// written pass it once folded — and then get stored, and matched
+		// for duplicates, under the raw name it never actually validated.
+		if !dotenvKey.MatchString(name) {
 			return Wish{}, fmt.Errorf(
 				"environment %q cannot become a dotenv variable name: use letters, digits and underscores, not starting with a digit", name)
 		}
