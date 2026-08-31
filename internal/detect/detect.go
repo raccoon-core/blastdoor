@@ -144,6 +144,17 @@ func affected(units, changed []string, root string) []string {
 // this branch change" actually means.
 func ResolveBaseRef(opts Options) (string, error) {
 	if opts.BaseRef != "" {
+		// GitLab sets CI_COMMIT_BEFORE_SHA to all zeros on a branch's first
+		// pipeline, which is what the default-branch jobs pass as --base-ref.
+		// Git resolves it to nothing, and the failure that follows names a SHA
+		// nobody wrote, in a job whose real problem is that there is no
+		// previous commit.
+		if isZeroSHA(opts.BaseRef) {
+			return "", fmt.Errorf(
+				"base ref %q is the all-zero SHA, which is what CI_COMMIT_BEFORE_SHA holds on a "+
+					"branch's first pipeline: there is no previous commit to diff against",
+				opts.BaseRef)
+		}
 		return opts.BaseRef, nil
 	}
 	if sha := os.Getenv("CI_MERGE_REQUEST_DIFF_BASE_SHA"); sha != "" {
@@ -250,4 +261,14 @@ func sameCommit(repoDir, a, b string) (bool, error) {
 		return false, err
 	}
 	return first == second, nil
+}
+
+// isZeroSHA reports whether a ref is git's all-zero object id.
+//
+// Both widths, because a repository on sha256 gets a 64-character one.
+func isZeroSHA(ref string) bool {
+	if len(ref) != 40 && len(ref) != 64 {
+		return false
+	}
+	return strings.Trim(ref, "0") == ""
 }
