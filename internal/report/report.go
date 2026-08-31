@@ -14,9 +14,12 @@ import (
 
 // Unit is one planned directory and what the policies made of it.
 type Unit struct {
-	Path    string          `json:"path"`
-	Verdict policy.Verdict  `json:"verdict"`
-	Changes []policy.Change `json:"changes"`
+	Path string `json:"path"`
+	// Environment is what 'blastdoor plan --environment' recorded beside this
+	// unit's plan. Empty when nothing recorded one.
+	Environment string          `json:"environment,omitempty"`
+	Verdict     policy.Verdict  `json:"verdict"`
+	Changes     []policy.Change `json:"changes"`
 }
 
 // Report is the complete result of an evaluation run.
@@ -38,6 +41,9 @@ type Report struct {
 	// Engines names what produced the plans — terraform, tofu, or both while
 	// a repository is moving between them. Empty when nothing recorded it.
 	Engines []string `json:"engines,omitempty"`
+	// Environments says, per environment, whether this change may be applied
+	// unattended. Empty when no wish was stated, which turns the feature off.
+	Environments []EnvDecision `json:"environments,omitempty"`
 }
 
 // Layer is one policy tier and where it came from.

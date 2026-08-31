@@ -1,6 +1,10 @@
 package report
 
-import "testing"
+import (
+	"testing"
+
+	"github.com/raccoon-core/blastdoor/internal/policy"
+)
 
 func TestParseWishKeepsStatedOrder(t *testing.T) {
 	w, err := ParseWish("int=auto,stg=auto,prd=manual")
@@ -66,5 +70,147 @@ func TestParseWishToleratesSpacingAndTrailingComma(t *testing.T) {
 	}
 	if len(w.Names()) != 2 {
 		t.Errorf("Names() = %v, want 2 entries", w.Names())
+	}
+}
+
+// unit builds a report unit in one environment with one change.
+func unit(path, env string, v policy.Verdict) Unit {
+	return Unit{
+		Path:        path,
+		Environment: env,
+		Changes:     []policy.Change{{Address: "x", Verdict: v, Reasons: []string{"because"}, Actions: []string{"create"}}},
+	}
+}
+
+func methodFor(t *testing.T, r Report, env string) Method {
+	t.Helper()
+	for _, e := range r.Environments {
+		if e.Name == env {
+			return e.Method
+		}
+	}
+	t.Fatalf("no decision for environment %q in %+v", env, r.Environments)
+	return ""
+}
+
+// The wish is a ceiling: nothing can turn a manual wish into an auto apply.
+func TestDecideCeilingHolds(t *testing.T) {
+	rep := Build([]Unit{unit("ops/prd/a", "prd", policy.Pass)})
+	w, _ := ParseWish("prd=manual")
+	if err := rep.Decide(w); err != nil {
+		t.Fatalf("Decide: %v", err)
+	}
+	if got := methodFor(t, rep, "prd"); got != Manual {
+		t.Errorf("prd = %q, want manual: an all-pass plan must not override a manual wish", got)
+	}
+}
+
+func TestDecideVerdictTightens(t *testing.T) {
+	rep := Build([]Unit{unit("ops/int/a", "int", policy.Review)})
+	w, _ := ParseWish("int=auto")
+	if err := rep.Decide(w); err != nil {
+		t.Fatalf("Decide: %v", err)
+	}
+	if got := methodFor(t, rep, "int"); got != Manual {
+		t.Errorf("int = %q, want manual: the verdict here is review", got)
+	}
+}
+
+func TestDecideAutoWhenNothingObjects(t *testing.T) {
+	rep := Build([]Unit{unit("ops/int/a", "int", policy.Pass)})
+	w, _ := ParseWish("int=auto")
+	if err := rep.Decide(w); err != nil {
+		t.Fatalf("Decide: %v", err)
+	}
+	if got := methodFor(t, rep, "int"); got != Auto {
+		t.Errorf("int = %q, want auto", got)
+	}
+}
+
+// The ordering bug this guards: an environment nothing changed in has a
+// vacuously passing verdict, so asking about auto first makes it auto.
+func TestDecideUntouchedEnvironmentIsNoneNotAuto(t *testing.T) {
+	rep := Build([]Unit{unit("ops/int/a", "int", policy.Pass)})
+	w, _ := ParseWish("int=auto,prd=auto")
+	if err := rep.Decide(w); err != nil {
+		t.Fatalf("Decide: %v", err)
+	}
+	if got := methodFor(t, rep, "prd"); got != None {
+		t.Errorf("prd = %q, want none: no unit changed there, and its wish is auto", got)
+	}
+}
+
+// A change that rewrites the rules judging it cannot apply unattended anywhere.
+func TestDecideGuardsForceManualEverywhere(t *testing.T) {
+	rep := Build([]Unit{
+		unit("ops/int/a", "int", policy.Pass),
+		unit("ops/stg/a", "stg", policy.Pass),
+	})
+	rep.RequireReview([]string{"policy/kafka.rego"})
+	w, _ := ParseWish("int=auto,stg=auto")
+	if err := rep.Decide(w); err != nil {
+		t.Fatalf("Decide: %v", err)
+	}
+	for _, env := range []string{"int", "stg"} {
+		if got := methodFor(t, rep, env); got != Manual {
+			t.Errorf("%s = %q, want manual: the change edits guarded paths", env, got)
+		}
+	}
+}
+
+func TestDecideUncoveredFilesForceManualEverywhere(t *testing.T) {
+	rep := Build([]Unit{unit("ops/int/a", "int", policy.Pass)})
+	rep.RequireCoverage([]string{"topics.yaml"})
+	w, _ := ParseWish("int=auto")
+	if err := rep.Decide(w); err != nil {
+		t.Fatalf("Decide: %v", err)
+	}
+	if got := methodFor(t, rep, "int"); got != Manual {
+		t.Errorf("int = %q, want manual: a file no plan covers", got)
+	}
+}
+
+func TestDecideKeepsWishOrder(t *testing.T) {
+	rep := Build([]Unit{unit("ops/prd/a", "prd", policy.Pass)})
+	w, _ := ParseWish("int=auto,stg=auto,prd=manual")
+	if err := rep.Decide(w); err != nil {
+		t.Fatalf("Decide: %v", err)
+	}
+	want := []string{"int", "stg", "prd"}
+	for i, name := range want {
+		if rep.Environments[i].Name != name {
+			t.Errorf("Environments[%d] = %q, want %q — the wish order, not alphabetical", i, rep.Environments[i].Name, name)
+		}
+	}
+}
+
+func TestDecideRejectsUnplaceableUnits(t *testing.T) {
+	tests := []struct {
+		name string
+		unit Unit
+		wish string
+	}{
+		{"no environment recorded", unit("ops/a", "", policy.Pass), "int=auto"},
+		{"environment the wish does not name", unit("ops/dev/a", "dev", policy.Pass), "int=auto"},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			rep := Build([]Unit{tc.unit})
+			w, _ := ParseWish(tc.wish)
+			if err := rep.Decide(w); err == nil {
+				t.Error("Decide = nil error, want one: an unplaceable unit is applied by nobody or by a job nobody configured")
+			}
+		})
+	}
+}
+
+// No wish means the feature is off, including its errors.
+func TestDecideWithoutAWishIsInert(t *testing.T) {
+	rep := Build([]Unit{unit("ops/a", "", policy.Pass)})
+	if err := rep.Decide(Wish{}); err != nil {
+		t.Fatalf("Decide with no wish: %v", err)
+	}
+	if len(rep.Environments) != 0 {
+		t.Errorf("Environments = %v, want none", rep.Environments)
 	}
 }
