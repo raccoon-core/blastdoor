@@ -33,9 +33,21 @@ allow contains {"resource": rc.address, "reason": "trust me"} if {
 
 to its own policy directory passes everything. A bypass has to say "allow" in
 as many words, which is at least glaring in a diff — but it is still a bypass.
-The GitLab template guards `.blastdoor.yml`, `policy/` and `.gitlab-ci.yml` by
-default. **If you wire the commands up yourself, pass `--guard-path` or you
-have no gate.**
+The GitLab template guards `.blastdoor.yml`, `policy/`, `.gitlab-ci.yml` and
+`.gitlab/blastdoor-apply.yml` by default. **If you wire the commands up
+yourself, pass `--guard-path` or you have no gate.**
+
+### The apply include must be guarded too
+
+`.gitlab/blastdoor-apply.yml` is the script that applies infrastructure — its
+image, its credentials, the command that runs `terraform apply` or its
+equivalent. A merge request that can rewrite it unreviewed can run anything it
+wants in a job that holds production credentials, and it does so after the
+gate has already passed: the apply job runs once the change has merged, using
+whatever the merge left in that file. This ranks with guarding the policy
+directory itself: both are a merge request rewriting the thing that will act on
+its own changes. The template's default `BLASTDOOR_GUARD_PATHS` includes it;
+keep that entry if you change the list.
 
 ### Layered policies let a repository override its company's rules
 
@@ -77,6 +89,19 @@ Two things keep this closed, and both have to hold:
 Self-guarding catches an edit, not a deletion — a config that is gone cannot
 ask to be guarded — which is why the template names `.blastdoor.yml`
 explicitly as well.
+
+### The deployment method wish is pipeline-only, on purpose
+
+`--deployment-method-wish` / `BLASTDOOR_DEPLOYMENT_METHOD_WISH` cannot be set
+from `.blastdoor.yml` — the config decoder rejects an `environments:` key
+outright, the whole file fails to load, and the command errors rather than
+silently ignoring it. This is deliberate, and for the same reason
+`BLASTDOOR_APPROVER_GROUP_IDS` stays out of the branch's hands in `gate.go`: a
+branch declaring `prd=auto` is a branch arranging its own unattended production
+apply. The pipeline states the wish; the pipeline's statement is the only one
+that counts. A project that needs a different wish overrides the variable in
+its own `.gitlab-ci.yml`, which is itself guarded, so changing it forces review
+of the commit that changed it.
 
 ## What blastdoor cannot enforce
 

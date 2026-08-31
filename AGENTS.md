@@ -194,6 +194,26 @@ case mise's safe mode exists for.
 `runner.miseEnv` sets `MISE_SAFE=1`, and the image sets it too. Do not remove
 either, and do not add a flag to turn it off.
 
+### The deployment method wish is not config
+
+`--deployment-method-wish` / `BLASTDOOR_DEPLOYMENT_METHOD_WISH` is not readable
+from `.blastdoor.yml` — an `environments:` key there rejects the whole file,
+via the same `KnownFields(true)` decoder that keeps out anything else the
+config doesn't name. Same reasoning as the approver group ids: a branch
+declaring `prd=auto` is a branch arranging its own unattended production apply,
+so the pipeline states the wish and the pipeline's statement is the only one.
+Do not add an `environments:` field to the config struct to make this more
+convenient; that is the bypass, not a feature.
+
+### `none` is tested before `auto` in `Report.Decide`
+
+An environment with no changed units has a vacuously passing verdict — there
+is nothing in it to deny. Testing `auto` first would read that as "nothing
+here objects" and resolve every untouched environment to `auto`, generating an
+apply job that runs the repository's apply script against an empty unit list.
+`none` has to be checked first so "nothing changed" and "nothing objected" stay
+different facts.
+
 ### `--guard-path` is the only thing stopping self-approval
 
 Policies usually live in the repository they gate, so a merge request can

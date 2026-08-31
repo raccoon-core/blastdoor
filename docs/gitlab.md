@@ -58,3 +58,76 @@ says so and does nothing, so the earlier jobs still report on every push.
 
 See [ci/gitlab/blastdoor.yml](https://github.com/raccoon-core/blastdoor/blob/main/ci/gitlab/blastdoor.yml)
 for the variables.
+
+## The deployment method
+
+`eval` can also answer a second question, per environment: may this be applied
+unattended? Set `BLASTDOOR_DEPLOYMENT_METHOD_WISH` — comma-separated
+`env=method` pairs, e.g. `int=auto,stg=auto,prd=manual` — and `eval` folds each
+environment's worst verdict into `auto`, `manual` or `none`. Leave the variable
+unset and the whole feature is off: no new dotenv keys, no generated pipeline,
+no change in behaviour.
+
+The wish is a **ceiling, not a default.** A `review` or `deny` verdict, a
+guarded path, or an uncovered file all force `manual` regardless of what was
+asked for; nothing here can turn a `manual` wish into an unattended apply. See
+[Verdicts](verdicts.md) for how the fold works.
+
+`none` means no unit in that environment changed. Emitting `auto` for an
+environment with nothing to apply would be true but useless — it would
+generate a job that runs the repository's apply script against an empty unit
+list. `none` says the honest thing instead: no apply job is generated for it
+at all.
+
+To use this, the repository provides `.gitlab/blastdoor-apply.yml` — named by
+`--apply-include` / `BLASTDOOR_APPLY_INCLUDE`, default
+`.gitlab/blastdoor-apply.yml` — containing a hidden `.blastdoor:apply` job: its
+image, its credentials, and the apply command itself, reading `$BLASTDOOR_ENV`
+to know which environment it is applying. Blastdoor generates the `when:`; it
+has no way to know your image, your credentials, or whether you apply a saved
+plan or re-plan, so it does not generate the job that does the applying.
+
+### Why the decision is not just a dotenv variable
+
+The obvious design is to write `BLASTDOOR_DEPLOY_PRD=manual` into
+`artifacts:reports:dotenv` and read it from the apply job's `when:`. **This does
+not work, and it fails silently rather than with an error**, so it is worth
+spelling out why before anyone tries it:
+
+- `when:` does not accept a variable. `when: $BLASTDOOR_DEPLOY_PRD` is a
+  template error ([gitlab#31974], open since 2017).
+- The documented workaround is `rules:`, which *can* set `when:` conditionally —
+  but rules are evaluated at **pipeline creation**, before any job has run, and
+  GitLab states plainly that dotenv variables are unavailable in `rules:`
+  ([dotenv_variables], [gitlab#235812]).
+
+So a rule like
+
+```yaml
+rules:
+  - if: $BLASTDOOR_DEPLOY_PRD == "manual"
+    when: manual
+```
+
+parses without complaint and simply never matches: the variable it names does
+not exist yet at the point GitLab reads this. The job runs with whatever
+`when:` its other rules give it, and nothing tells you the condition was dead.
+
+The decision is therefore delivered twice, in two different forms, because
+neither form alone can do the whole job:
+
+- **`blastdoor.env`** is the record — read by humans in job logs, and by
+  anything that wants the decision as data.
+- **`apply.gitlab-ci.yml`**, written by `eval` into its `--out-dir` whenever a
+  wish was stated, is the mechanism — a generated child pipeline whose jobs
+  carry a **literal** `when: on_success` or `when: manual`, one per environment
+  that isn't `none`, triggered with `trigger: include: artifact:`. A literal
+  `when:` is the only form of this decision GitLab will actually act on.
+
+The dotenv is the record. The generated YAML is the mechanism. Read the
+dotenv if you want to know what happened; the generated pipeline is what makes
+it happen.
+
+[gitlab#31974]: https://gitlab.com/gitlab-org/gitlab/-/issues/31974
+[gitlab#235812]: https://gitlab.com/gitlab-org/gitlab/-/issues/235812
+[dotenv_variables]: https://docs.gitlab.com/ci/variables/dotenv_variables/

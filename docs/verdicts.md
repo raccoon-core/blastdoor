@@ -38,3 +38,39 @@ A `no-op` is the only change needing no rule. These are pinned by
     judging it, or delete the job that runs them, does not need to beat them.
     Pass `--guard-path` (the GitLab template does by default) and read
     [Hardening](hardening.md) before relying on the gate.
+
+## From verdict to deployment method
+
+A verdict says whether a change may merge. It says nothing about whether the
+result may be *applied* without somebody watching — that is a second,
+per-environment question, and `eval` answers it by folding each environment's
+verdict against a wish stated by the pipeline
+(`--deployment-method-wish`/`BLASTDOOR_DEPLOYMENT_METHOD_WISH`, e.g.
+`int=auto,stg=auto,prd=manual`; see [GitLab](gitlab.md#the-deployment-method)):
+
+```
+method(env) = none   iff  no unit in env changed          <- tested first
+              auto   iff  wish(env)    == auto
+                     and  verdict(env) == pass
+                     and  no repository-wide condition forced manual
+              manual otherwise
+```
+
+`verdict(env)` is the worst verdict among the units carrying that environment —
+the same fold that decides the whole plan's verdict, one level up. Guarded
+paths and uncovered files (`--require-coverage`) force `manual` in every
+environment even when they would already have forced at least `review`: they
+are named explicitly because a change that rewrites the rules judging it must
+not be applied unattended anywhere, and that has to survive someone later
+deciding a bare `review` should not block an unattended apply.
+
+**`none` is tested first, and the order is load-bearing.** An environment with
+no changed units has a vacuously passing verdict — there is nothing to deny —
+so testing `auto` first would resolve every environment the change did not
+touch to `auto`, and generate an apply job for it.
+
+**The wish is a ceiling, not a default.** It states the best a pipeline is
+willing to accept; nothing in the fold can turn a stated `manual` into an
+unattended apply, only the reverse — a wish of `auto` tightening to `manual`
+when the verdict, a guard, or a coverage gap says so. `method(env)` never
+exceeds `wish(env)`.
