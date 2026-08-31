@@ -191,11 +191,23 @@ func (r Report) WriteJSON(w io.Writer) error {
 
 // WriteEnv writes a dotenv file, for GitLab's `artifacts:reports:dotenv` to
 // pass the verdict to later jobs.
+//
+// The deployment methods are a record, not a mechanism: GitLab's `when:` does
+// not expand a variable, and `rules:` — which can set `when:` — is evaluated at
+// pipeline creation, before this file exists. WriteApplyYAML is what actually
+// carries the decision into a job.
 func (r Report) WriteEnv(w io.Writer) error {
-	_, err := fmt.Fprintf(w,
+	if _, err := fmt.Fprintf(w,
 		"BLASTDOOR_VERDICT=%s\nBLASTDOOR_UNIT_COUNT=%d\nBLASTDOOR_PASS_COUNT=%d\nBLASTDOOR_REVIEW_COUNT=%d\nBLASTDOOR_DENY_COUNT=%d\n",
-		r.Verdict, r.UnitCount, r.Counts[policy.Pass], r.Counts[policy.Review], r.Counts[policy.Deny])
-	return err
+		r.Verdict, r.UnitCount, r.Counts[policy.Pass], r.Counts[policy.Review], r.Counts[policy.Deny]); err != nil {
+		return err
+	}
+	for _, e := range r.Environments {
+		if _, err := fmt.Fprintf(w, "BLASTDOOR_DEPLOY_%s=%s\n", strings.ToUpper(e.Name), e.Method); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 // WriteMarkdown writes the human-readable summary posted to the merge request.
@@ -204,6 +216,7 @@ func (r Report) WriteMarkdown(w io.Writer) error {
 
 	b.WriteString(r.heading())
 	b.WriteString(r.headline())
+	b.WriteString(r.environmentTable())
 
 	if len(r.Guarded) > 0 {
 		b.WriteString("\nThis change also edits the rules that judge it, so a person has to look regardless:\n\n")
@@ -270,6 +283,43 @@ func (r Report) verdictTable() string {
 		}
 	}
 	return b.String()
+}
+
+// environmentTable says what the apply will do, per environment.
+//
+// Above the verdict table deliberately. "What does this change contain" and
+// "what will approving it cause" are different questions, and the second is the
+// one a reviewer is answering when they click approve.
+func (r Report) environmentTable() string {
+	if len(r.Environments) == 0 {
+		return ""
+	}
+
+	var b strings.Builder
+	b.WriteString("\n| Environment | Apply | Why |\n|---|---|---|\n")
+	for _, e := range r.Environments {
+		b.WriteString(fmt.Sprintf("| %s | %s | %s |\n",
+			escapePipes(e.Name),
+			methodMarker(e.Method),
+			escapePipes(strings.Join(e.Reasons, "; "))))
+	}
+	return b.String()
+}
+
+// methodMarker is the symbol for a deployment method.
+//
+// The word is always kept alongside the symbol, for the same reason emoji()
+// keeps it: a symbol alone is lost to a screen reader and to a plain-text copy
+// of the note.
+func methodMarker(m Method) string {
+	switch m {
+	case Auto:
+		return "✅ auto"
+	case Manual:
+		return "✋ manual"
+	default:
+		return "— none"
+	}
 }
 
 // layerBlock lists the policies that judged this run.

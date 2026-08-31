@@ -178,3 +178,78 @@ func TestWriteMarkdownEscapesPipes(t *testing.T) {
 		t.Errorf("pipe was not escaped:\n%s", b.String())
 	}
 }
+
+// decided builds a report that has already been through Decide.
+func decided(t *testing.T, wish string, units []Unit) Report {
+	t.Helper()
+	rep := Build(units)
+	w, err := ParseWish(wish)
+	if err != nil {
+		t.Fatalf("ParseWish: %v", err)
+	}
+	if err := rep.Decide(w); err != nil {
+		t.Fatalf("Decide: %v", err)
+	}
+	return rep
+}
+
+func TestWriteEnvCarriesTheDeploymentMethods(t *testing.T) {
+	rep := decided(t, "int=auto,stg=auto,prd=manual", []Unit{
+		{Path: "ops/int/a", Environment: "int", Changes: []policy.Change{change("x", policy.Pass, "fine")}},
+		{Path: "ops/stg/a", Environment: "stg", Changes: []policy.Change{change("y", policy.Review, "look")}},
+	})
+
+	var b strings.Builder
+	if err := rep.WriteEnv(&b); err != nil {
+		t.Fatalf("WriteEnv: %v", err)
+	}
+	got := b.String()
+
+	for _, want := range []string{
+		"BLASTDOOR_DEPLOY_INT=auto\n",
+		"BLASTDOOR_DEPLOY_STG=manual\n",
+		"BLASTDOOR_DEPLOY_PRD=none\n",
+		"BLASTDOOR_VERDICT=review\n",
+	} {
+		if !strings.Contains(got, want) {
+			t.Errorf("WriteEnv missing %q, got:\n%s", want, got)
+		}
+	}
+}
+
+// No wish, no new keys: an existing pipeline sees exactly what it saw before.
+func TestWriteEnvUnchangedWithoutAWish(t *testing.T) {
+	rep := Build([]Unit{{Path: "a", Changes: []policy.Change{change("x", policy.Pass, "fine")}}})
+
+	var b strings.Builder
+	if err := rep.WriteEnv(&b); err != nil {
+		t.Fatalf("WriteEnv: %v", err)
+	}
+	if strings.Contains(b.String(), "BLASTDOOR_DEPLOY_") {
+		t.Errorf("WriteEnv wrote a deployment key with no wish stated:\n%s", b.String())
+	}
+}
+
+func TestWriteMarkdownShowsTheEnvironmentTable(t *testing.T) {
+	rep := decided(t, "int=auto,prd=manual", []Unit{
+		{Path: "ops/int/a", Environment: "int", Changes: []policy.Change{change("x", policy.Pass, "fine")}},
+	})
+
+	var b strings.Builder
+	if err := rep.WriteMarkdown(&b); err != nil {
+		t.Fatalf("WriteMarkdown: %v", err)
+	}
+	got := b.String()
+
+	for _, want := range []string{"| Environment | Apply | Why |", "✅ auto", "— none"} {
+		if !strings.Contains(got, want) {
+			t.Errorf("WriteMarkdown missing %q, got:\n%s", want, got)
+		}
+	}
+
+	// Above the verdict table: a reviewer decides whether to approve knowing
+	// what approving will cause.
+	if strings.Index(got, "| Environment |") > strings.Index(got, "| Verdict |") {
+		t.Error("the environment table must come before the verdict table")
+	}
+}
