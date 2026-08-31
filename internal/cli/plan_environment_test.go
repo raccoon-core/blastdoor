@@ -3,7 +3,6 @@ package cli
 import (
 	"os"
 	"path/filepath"
-	"strings"
 	"testing"
 )
 
@@ -23,8 +22,8 @@ func TestWriteEnvironmentFileRecordsThePerUnitFile(t *testing.T) {
 	if err != nil {
 		t.Fatalf("reading environment.txt: %v", err)
 	}
-	if got := strings.TrimSpace(string(raw)); got != "int" {
-		t.Errorf("environment.txt = %q, want %q", got, "int")
+	if got := string(raw); got != "int\n" {
+		t.Errorf("environment.txt = %q, want %q", got, "int\n")
 	}
 }
 
