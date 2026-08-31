@@ -40,3 +40,6 @@ node_modules/
 # docs site, and the venv `make docs-serve` builds it in
 site/
 .venv-docs/
+
+# subagent-driven-development scratch: ledger, briefs, review packages
+.superpowers/
