@@ -9,6 +9,9 @@ include:
 stages: [plan, risk]
 ```
 
+The apply job (below) runs in `.post`, which GitLab always defines, so it needs
+no entry in `stages:` and no change to this list.
+
 Set `BLASTDOOR_GITLAB_TOKEN` to a token with the `api` scope; the rest of the
 pipeline's variables are in [Environment](environment.md). `gate` approves a
 passing merge request, requires an approval on `review`, and on `deny` also
@@ -111,6 +114,32 @@ to know which environment it is applying. Blastdoor generates the `when:`; it
 has no way to know your image, your credentials, or whether you apply a saved
 plan or re-plan, so it does not generate the job that does the applying.
 
+A minimal example, obviously a template rather than something to use as-is:
+
+```yaml
+# .gitlab/blastdoor-apply.yml
+.blastdoor:apply:
+  image: your-terraform-image:tag
+  variables:
+    # However your project supplies credentials to an apply job — a
+    # protected CI/CD variable, OIDC, vault: — goes here, not in this file.
+    TF_VAR_something: $YOUR_APPLY_CREDENTIAL
+  script:
+    - terraform -chdir="environments/$BLASTDOOR_ENV" apply -auto-approve
+```
+
+`$BLASTDOOR_APPLY_INCLUDE` must stay in `BLASTDOOR_GUARD_PATHS` — see
+[Hardening](hardening.md#the-apply-include-must-be-guarded-too) — because this
+is the file that runs with production credentials.
+
+**`strategy: depend` means the parent pipeline waits on this.** `blastdoor:apply`
+triggers the generated pipeline with `strategy: depend`, so the parent mirrors
+the child's state rather than firing and forgetting it. This is a consequence
+of the design, not a warning to work around: with `prd=manual`, the main
+pipeline sits unfinished — neither passed nor failed — until somebody clicks
+the manual `apply:prd` job in the generated pipeline. That is what "the pipeline
+states a wish, the verdict may only tighten it" is for.
+
 ### Why the decision is not just a dotenv variable
 
 The obvious design is to write `BLASTDOOR_DEPLOY_PRD=manual` into
@@ -119,7 +148,7 @@ not work, and it fails silently rather than with an error**, so it is worth
 spelling out why before anyone tries it:
 
 - `when:` does not accept a variable. `when: $BLASTDOOR_DEPLOY_PRD` is a
-  template error ([gitlab#31974], open since 2017).
+  template error ([gitlab#31974]).
 - The documented workaround is `rules:`, which *can* set `when:` conditionally —
   but rules are evaluated at **pipeline creation**, before any job has run, and
   GitLab states plainly that dotenv variables are unavailable in `rules:`
@@ -144,9 +173,13 @@ neither form alone can do the whole job:
   anything that wants the decision as data.
 - **`apply.gitlab-ci.yml`**, written by `eval` into its `--out-dir` whenever a
   wish was stated, is the mechanism — a generated child pipeline whose jobs
-  carry a **literal** `when: on_success` or `when: manual`, one per environment
-  that isn't `none`, triggered with `trigger: include: artifact:`. A literal
-  `when:` is the only form of this decision GitLab will actually act on.
+  carry a **literal** `when: on_success` or `when: manual`, one per
+  environment that isn't `none`, triggered with `trigger: include: artifact:`.
+  A literal `when:` is the only form of this decision GitLab will actually
+  act on. A wish where every environment resolves to `none` — the ordinary
+  case for a docs-only or CI-only change — still gets a file: one holding a
+  single placeholder job rather than the `include:`-and-nothing-else that
+  GitLab refuses to build a pipeline from.
 
 The dotenv is the record. The generated YAML is the mechanism. Read the
 dotenv if you want to know what happened; the generated pipeline is what makes
