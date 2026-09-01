@@ -205,6 +205,65 @@ so the pipeline states the wish and the pipeline's statement is the only one.
 Do not add an `environments:` field to the config struct to make this more
 convenient; that is the bypass, not a feature.
 
+### Auto is a floor from policy, the wish is a ceiling on top of it — and the wish is now optional
+
+`Decide` no longer requires a wish to do anything. It used to return
+immediately when `!w.Stated()`; now it always folds `r.Units` into
+`r.Environments`, using whatever environments `blastdoor plan --environment`
+recorded on the units themselves — `environmentNames`, not `w.Names()` — and
+bails out only when nothing recorded one at all. A wish, when stated, still
+gets the strict promise it always did (every unit's environment must be named
+by it, or `Decide` errors, and the wish's own order decides the environment
+order) — see the `w.Stated()` branch.
+
+Why the change: `BLASTDOOR_DEPLOYMENT_METHOD_WISH` is a CI/CD variable a human
+sets, and a fully automated provisioning flow (Backstage, copier, an MR merged
+by nobody in particular) has no human in the loop to set it. Auto now has to
+be able to come from somewhere that isn't a pipeline variable.
+
+That somewhere is policy. An `allow` rule can name, per environment, whether
+it is safe to automate: `{"resource": rc.address, "reason": "...",
+"deployment_method": {"int": "auto", "stg": "auto", "prd": "manual"}}`
+(`policy.Change.DeploymentMethod`, `policy.ruleMatch`,
+`policy.intersectDeploymentMethod`). Only `"auto"` and `"manual"` are valid
+values — `decodeJudgement` rejects anything else, the same way `ParseWish`
+rejects anything but `auto`/`manual` for the wish. Two things both have to
+hold before an environment goes `Auto`:
+
+- Every change in every unit in that environment is `Pass`, same as before.
+- Every one of those changes was matched by an allow rule whose
+  `deployment_method` names this specific environment `"auto"`
+  (`report.unitAutoFor`). A rule silent on an environment, or naming it
+  `"manual"`, are the same fact as far as this is concerned — either way that
+  rule did not vouch for auto there. A rule that predates this feature
+  contributes nothing at all, which is why nothing starts auto-applying just
+  because it now passes policy. `deployment_method` has to be opted into per
+  rule, deliberately.
+
+When more than one allow rule matches the same resource, their
+`deployment_method` maps are **intersected**, not unioned
+(`intersectDeploymentMethod`): every matching rule has to say `"auto"` for an
+environment, the same way one denying rule is enough to keep the whole change
+from passing. Do not change this to a union — that would let an unrelated,
+permissive rule launder automation onto a resource a stricter rule also
+matched. `Change.DeploymentMethod` after folding holds only the environments
+every matching rule agreed on, and only ever with the value `"auto"` — an
+environment is either in the map meaning auto, or absent meaning manual;
+nothing downstream needs to distinguish "named manual" from "never named".
+
+The wish, when a pipeline does state one, still narrows on top of this — it
+can turn an environment policy would otherwise automate into manual (a wish of
+`manual`), but it can never turn one policy has not vouched for into auto.
+Nothing here reverses that ceiling; it just stopped being the only thing that
+could ever produce a floor.
+
+**Do not read `deployment_method` from `.blastdoor.yml` or any other
+repository-supplied config**, for the same reason the wish itself is not
+config: unlike the wish, these rules live in the policy layer, which is
+centrally guarded and tiered (see "the most severe matching verdict wins"
+above) — that is what keeps naming an environment safe to automate a decision
+the repository being judged never gets to make for itself.
+
 ### `none` is tested before `auto` in `Report.Decide`
 
 An environment with no changed units has a vacuously passing verdict — there

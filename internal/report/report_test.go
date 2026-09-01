@@ -11,6 +11,17 @@ func change(address string, v policy.Verdict, reasons ...string) policy.Change {
 	return policy.Change{Address: address, Verdict: v, Reasons: reasons, Actions: []string{"create"}}
 }
 
+// autoChange is a Pass change whose rule vouched for the named environments —
+// the Decide tests below fold a wish and this together the way blastdoor
+// eval does, so a test wanting "auto" now has to earn it on both counts.
+func autoChange(address string, envs ...string) policy.Change {
+	method := map[string]string{}
+	for _, e := range envs {
+		method[e] = "auto"
+	}
+	return policy.Change{Address: address, Verdict: policy.Pass, Reasons: []string{"fine"}, Actions: []string{"create"}, DeploymentMethod: method}
+}
+
 // The plan takes the worst verdict anywhere in it — no arithmetic.
 func TestBuildTakesTheWorstVerdict(t *testing.T) {
 	tests := []struct {
@@ -195,7 +206,7 @@ func decided(t *testing.T, wish string, units []Unit) Report {
 
 func TestWriteEnvCarriesTheDeploymentMethods(t *testing.T) {
 	rep := decided(t, "int=auto,stg=auto,prd=manual", []Unit{
-		{Path: "ops/int/a", Environment: "int", Changes: []policy.Change{change("x", policy.Pass, "fine")}},
+		{Path: "ops/int/a", Environment: "int", Changes: []policy.Change{autoChange("x", "int")}},
 		{Path: "ops/stg/a", Environment: "stg", Changes: []policy.Change{change("y", policy.Review, "look")}},
 	})
 
@@ -232,7 +243,7 @@ func TestWriteEnvUnchangedWithoutAWish(t *testing.T) {
 
 func TestWriteMarkdownShowsTheEnvironmentTable(t *testing.T) {
 	rep := decided(t, "int=auto,prd=manual", []Unit{
-		{Path: "ops/int/a", Environment: "int", Changes: []policy.Change{change("x", policy.Pass, "fine")}},
+		{Path: "ops/int/a", Environment: "int", Changes: []policy.Change{autoChange("x", "int")}},
 	})
 
 	var b strings.Builder

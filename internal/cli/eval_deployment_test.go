@@ -156,12 +156,15 @@ func TestEvalWritesAPlaceholderApplyPipelineWhenEveryEnvironmentIsNone(t *testin
 	}
 }
 
-// No wish, no generated pipeline: an existing consumer sees no new files.
-func TestEvalWritesNoApplyPipelineWithoutAWish(t *testing.T) {
+// No unit carries an environment, no generated pipeline: a repository that
+// has not arranged per-environment planning sees no new files, wish or no
+// wish — a wish alone no longer turns this on; see TestDecide in
+// internal/report for why.
+func TestEvalWritesNoApplyPipelineWithoutAnyEnvironment(t *testing.T) {
 	dir := t.TempDir()
 	planDir := filepath.Join(dir, "plans")
 	outDir := filepath.Join(dir, "out")
-	planEnvTree(t, planDir, "ops/int/topics", "int")
+	planEnvTree(t, planDir, "ops/topics", "") // no --environment recorded
 
 	policyDir := filepath.Join(dir, "policy")
 	if err := os.MkdirAll(policyDir, 0o755); err != nil {
@@ -180,6 +183,74 @@ func TestEvalWritesNoApplyPipelineWithoutAWish(t *testing.T) {
 	}
 
 	if _, err := os.Stat(filepath.Join(outDir, "apply.gitlab-ci.yml")); !os.IsNotExist(err) {
-		t.Error("apply.gitlab-ci.yml was written with no wish stated")
+		t.Error("apply.gitlab-ci.yml was written with no unit carrying an environment")
+	}
+}
+
+// The point of this change: a repository that plans per environment gets an
+// apply pipeline even with no wish stated at all, as long as policy's own
+// allow rules vouch for the environment. Nobody has to state
+// BLASTDOOR_DEPLOYMENT_METHOD_WISH for automation to happen any more.
+func TestEvalWritesTheApplyPipelineWithoutAWishWhenPolicyVouches(t *testing.T) {
+	dir := t.TempDir()
+	planDir := filepath.Join(dir, "plans")
+	outDir := filepath.Join(dir, "out")
+
+	unitDir := filepath.Join(planDir, "ops/int/topics")
+	if err := os.MkdirAll(unitDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	plan := `{"format_version":"1.2","resource_changes":[
+		{"address":"kafka_topic.x","type":"kafka_topic","change":{"actions":["create"]}}
+	]}`
+	if err := os.WriteFile(filepath.Join(unitDir, "plan.json"), []byte(plan), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(unitDir, "environment.txt"), []byte("int\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	policyDir := filepath.Join(dir, "policy")
+	if err := os.MkdirAll(policyDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	rego := `package blastdoor
+
+allow contains {"resource": rc.address, "reason": "creating a topic", "deployment_method": {"int": "auto"}} if {
+	some rc in input.resource_changes
+	rc.type == "kafka_topic"
+	rc.change.actions == ["create"]
+}
+`
+	if err := os.WriteFile(filepath.Join(policyDir, "p.rego"), []byte(rego), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	var out strings.Builder
+	cmd := NewRootCmd()
+	cmd.SetOut(&out)
+	cmd.SetErr(&out)
+	cmd.SetArgs([]string{"eval", "--plan-dir", planDir, "--policy", policyDir, "--out-dir", outDir})
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("eval: %v\n%s", err, out.String())
+	}
+
+	envFile, err := os.ReadFile(filepath.Join(outDir, "blastdoor.env"))
+	if err != nil {
+		t.Fatalf("reading blastdoor.env: %v", err)
+	}
+	if !strings.Contains(string(envFile), "BLASTDOOR_DEPLOY_INT=auto") {
+		t.Errorf("blastdoor.env missing the int method:\n%s", envFile)
+	}
+
+	applyFile, err := os.ReadFile(filepath.Join(outDir, "apply.gitlab-ci.yml"))
+	if err != nil {
+		t.Fatalf("reading apply.gitlab-ci.yml: %v", err)
+	}
+	if !strings.Contains(string(applyFile), "apply:int:") {
+		t.Errorf("apply.gitlab-ci.yml has no int job:\n%s", applyFile)
+	}
+	if !strings.Contains(string(applyFile), "when: on_success") {
+		t.Errorf("apply.gitlab-ci.yml did not resolve int to an unattended apply:\n%s", applyFile)
 	}
 }

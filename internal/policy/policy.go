@@ -82,6 +82,16 @@ type Change struct {
 	// not decide, but a repository overriding its company's rules has to be
 	// auditable rather than merely effective.
 	Overridden []Judgement `json:"overridden,omitempty"`
+	// DeploymentMethod names, per environment, whether an `allow` rule
+	// considers this change safe to apply unattended — only ever "auto" is
+	// stored here; an environment a rule marked "manual", or never named at
+	// all, is simply absent, since absent and manual mean the same thing to
+	// everything downstream. Only ever set when Verdict is Pass — a change a
+	// policy sends to review or denies is never a candidate for automation,
+	// whatever an allow entry elsewhere said. Empty means no matching allow
+	// rule vouched for automating this change in any environment, which is
+	// the default for every rule that has not stated an opinion.
+	DeploymentMethod map[string]string `json:"deployment_method,omitempty"`
 }
 
 // Judgement is one layer's answer about one change.
@@ -89,6 +99,10 @@ type Judgement struct {
 	Layer   string   `json:"layer"`
 	Verdict Verdict  `json:"verdict"`
 	Reasons []string `json:"reasons,omitempty"`
+	// DeploymentMethod is what this layer's allow rules agreed is safe to
+	// apply unattended. See Change.DeploymentMethod — same rule: only
+	// meaningful when Verdict is Pass.
+	DeploymentMethod map[string]string `json:"deployment_method,omitempty"`
 }
 
 // Layer is one source of policies, with the weight that orders it.
@@ -421,6 +435,7 @@ func (e *Evaluator) Evaluate(ctx context.Context, plan any) (Result, error) {
 				change.Verdict = j.Verdict
 				change.Reasons = j.Reasons
 				change.Layer = e.layers[i].name
+				change.DeploymentMethod = j.DeploymentMethod
 				decided = true
 				continue
 			}
@@ -452,17 +467,17 @@ func (e *Evaluator) Evaluate(ctx context.Context, plan any) (Result, error) {
 // Within a layer the most severe rule still wins, so adding a rule to a layer
 // can only ever make that layer stricter. Only the layer boundary overrides.
 func (e *Evaluator) layerJudgements(ctx context.Context, layer compiledLayer, plan any) (map[string]Judgement, error) {
-	matched := map[string]map[Verdict][]string{}
+	matched := map[string]map[Verdict][]ruleMatch{}
 	for verdict := range Queries {
 		judgements, err := e.judgements(ctx, layer, verdict, plan)
 		if err != nil {
 			return nil, err
 		}
-		for address, reasons := range judgements {
+		for address, matches := range judgements {
 			if matched[address] == nil {
-				matched[address] = map[Verdict][]string{}
+				matched[address] = map[Verdict][]ruleMatch{}
 			}
-			matched[address][verdict] = append(matched[address][verdict], reasons...)
+			matched[address][verdict] = append(matched[address][verdict], matches...)
 		}
 	}
 
@@ -472,19 +487,82 @@ func (e *Evaluator) layerJudgements(ctx context.Context, layer compiledLayer, pl
 		for v := range byVerdict {
 			verdict = Worse(verdict, v)
 		}
-		out[address] = Judgement{Layer: layer.name, Verdict: verdict, Reasons: orderedReasons(byVerdict)}
+
+		reasons := map[Verdict][]string{}
+		for v, matches := range byVerdict {
+			for _, m := range matches {
+				reasons[v] = append(reasons[v], m.reason)
+			}
+		}
+
+		j := Judgement{Layer: layer.name, Verdict: verdict, Reasons: orderedReasons(reasons)}
+		// DeploymentMethod is only meaningful once nothing here needs a
+		// person to look — a rule cannot vouch for automation and be
+		// overruled by review or deny in the same breath.
+		if verdict == Pass {
+			j.DeploymentMethod = intersectDeploymentMethod(byVerdict[Pass])
+		}
+		out[address] = j
 	}
 	return out, nil
 }
 
-// judgements evaluates one rule set, returning reasons by resource address.
-func (e *Evaluator) judgements(ctx context.Context, layer compiledLayer, verdict Verdict, plan any) (map[string][]string, error) {
+// ruleMatch is one decoded entry from a rule set: what one matching rule said
+// about one address.
+type ruleMatch struct {
+	reason string
+	// deploymentMethod is what this rule said about each environment it named
+	// — "auto" or "manual". Only ever populated from the allow set — see
+	// Change.DeploymentMethod. An environment this rule did not name at all
+	// carries no opinion, which intersectDeploymentMethod treats the same as
+	// an explicit "manual": either way, this rule did not vouch for auto.
+	deploymentMethod map[string]string
+}
+
+// intersectDeploymentMethod folds every allow rule that matched one change
+// into the environments all of them agree are safe to automate.
+//
+// Intersection, not union: two rules matching the same resource both have to
+// say "auto" for an environment before it counts, the same way one denying
+// rule is enough to keep the whole change from passing. A rule that named no
+// environments at all, or named this one "manual" — every rule except the
+// ones written for this — still fails to contribute "auto" for it, which is
+// why leaving deployment_method off a rule, or naming an environment
+// "manual" there, is enough to keep every change it matches manual for that
+// environment.
+func intersectDeploymentMethod(matches []ruleMatch) map[string]string {
+	if len(matches) == 0 {
+		return nil
+	}
+	counts := map[string]int{}
+	for _, m := range matches {
+		for env, method := range m.deploymentMethod {
+			if method == "auto" {
+				counts[env]++
+			}
+		}
+	}
+	out := map[string]string{}
+	for env, n := range counts {
+		if n == len(matches) {
+			out[env] = "auto"
+		}
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
+}
+
+// judgements evaluates one rule set, returning what matched by resource
+// address.
+func (e *Evaluator) judgements(ctx context.Context, layer compiledLayer, verdict Verdict, plan any) (map[string][]ruleMatch, error) {
 	rs, err := layer.queries[verdict].Eval(ctx, rego.EvalInput(plan))
 	if err != nil {
 		return nil, fmt.Errorf("evaluating %s: %w", Queries[verdict], err)
 	}
 
-	out := map[string][]string{}
+	out := map[string][]ruleMatch{}
 	for _, result := range rs {
 		for _, expr := range result.Expressions {
 			values, ok := expr.Value.([]any)
@@ -492,11 +570,11 @@ func (e *Evaluator) judgements(ctx context.Context, layer compiledLayer, verdict
 				return nil, fmt.Errorf("%s returned %T, want a set of judgements", Queries[verdict], expr.Value)
 			}
 			for _, v := range values {
-				address, reason, err := decodeJudgement(v, Queries[verdict])
+				address, m, err := decodeJudgement(v, Queries[verdict])
 				if err != nil {
 					return nil, err
 				}
-				out[address] = append(out[address], reason)
+				out[address] = append(out[address], m)
 			}
 		}
 	}
@@ -504,26 +582,34 @@ func (e *Evaluator) judgements(ctx context.Context, layer compiledLayer, verdict
 }
 
 // decodeJudgement reads one entry from a rule set.
-func decodeJudgement(v any, query string) (address, reason string, err error) {
+func decodeJudgement(v any, query string) (address string, m ruleMatch, err error) {
 	raw, marshalErr := json.Marshal(v)
 	if marshalErr != nil {
-		return "", "", fmt.Errorf("re-encoding a judgement from %s: %w", query, marshalErr)
+		return "", ruleMatch{}, fmt.Errorf("re-encoding a judgement from %s: %w", query, marshalErr)
 	}
 
 	var decoded struct {
-		Resource string `json:"resource"`
-		Reason   string `json:"reason"`
+		Resource         string            `json:"resource"`
+		Reason           string            `json:"reason"`
+		DeploymentMethod map[string]string `json:"deployment_method,omitempty"`
 	}
 	if err := json.Unmarshal(raw, &decoded); err != nil {
-		return "", "", fmt.Errorf("%s produced %s, want an object with \"resource\" and \"reason\"", query, raw)
+		return "", ruleMatch{}, fmt.Errorf("%s produced %s, want an object with \"resource\" and \"reason\"", query, raw)
 	}
 	if decoded.Resource == "" {
-		return "", "", fmt.Errorf("%s produced a judgement with no \"resource\", so it cannot be attached to a change: %s", query, raw)
+		return "", ruleMatch{}, fmt.Errorf("%s produced a judgement with no \"resource\", so it cannot be attached to a change: %s", query, raw)
 	}
 	if decoded.Reason == "" {
-		return "", "", fmt.Errorf("%s produced a judgement with no \"reason\" for %s — say why, it goes in the summary", query, decoded.Resource)
+		return "", ruleMatch{}, fmt.Errorf("%s produced a judgement with no \"reason\" for %s — say why, it goes in the summary", query, decoded.Resource)
 	}
-	return decoded.Resource, decoded.Reason, nil
+	for env, method := range decoded.DeploymentMethod {
+		if method != "auto" && method != "manual" {
+			return "", ruleMatch{}, fmt.Errorf(
+				"%s named %s deployment_method %q for environment %q: it has to be \"auto\" or \"manual\"",
+				query, decoded.Resource, method, env)
+		}
+	}
+	return decoded.Resource, ruleMatch{reason: decoded.Reason, deploymentMethod: decoded.DeploymentMethod}, nil
 }
 
 // orderedReasons lists reasons most severe first, so the summary leads with

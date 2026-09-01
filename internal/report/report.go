@@ -42,7 +42,11 @@ type Report struct {
 	// a repository is moving between them. Empty when nothing recorded it.
 	Engines []string `json:"engines,omitempty"`
 	// Environments says, per environment, whether this change may be applied
-	// unattended. Empty when no wish was stated, which turns the feature off.
+	// unattended. Empty when no unit carries an environment at all — see
+	// Decide — which is what turns the feature off for a repository that has
+	// not arranged per-environment planning. A wish is not required: policy's
+	// own allow rules can authorise auto on their own, and a wish, when
+	// stated, only ever narrows what they allow.
 	Environments []EnvDecision `json:"environments,omitempty"`
 }
 

@@ -36,7 +36,7 @@ func job(t *testing.T, doc map[string]any, name string) map[string]any {
 
 func TestWriteApplyYAMLCarriesALiteralWhen(t *testing.T) {
 	rep := decided(t, "int=auto,stg=manual", []Unit{
-		{Path: "ops/int/a", Environment: "int", Changes: []policy.Change{change("x", policy.Pass, "fine")}},
+		{Path: "ops/int/a", Environment: "int", Changes: []policy.Change{autoChange("x", "int")}},
 		{Path: "ops/stg/a", Environment: "stg", Changes: []policy.Change{change("y", policy.Pass, "fine")}},
 	})
 

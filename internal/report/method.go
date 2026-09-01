@@ -121,25 +121,43 @@ type EnvDecision struct {
 // change is rewriting the rules that judge it — but Decide can only see that
 // once those have been recorded.
 //
-// The wish is a ceiling. Every condition here can only move an environment
-// towards manual; nothing turns a manual wish into an auto apply.
+// Two independent things can push an environment towards manual, and neither
+// can push the other way: the wish is a ceiling a pipeline states (nothing
+// turns a manual wish into an auto apply), and a policy's own allow rules are
+// a floor (nothing applies unattended that no rule vouched for — see
+// policy.Change.Auto). A wish is optional; the environments considered come
+// from whatever 'blastdoor plan --environment' recorded on the units
+// themselves, not from the wish naming them. When a wish IS stated, though,
+// it still has to name every environment a unit was placed in — see the
+// per-unit check below — so a pipeline that opts in gets the same strict
+// promise it always did.
 func (r *Report) Decide(w Wish) error {
-	if !w.Stated() {
-		return nil
+	envs := environmentNames(r.Units)
+
+	if w.Stated() {
+		// A unit nobody can place would be applied by a job nobody
+		// configured, or by no job at all — and "silently skipped" is
+		// indistinguishable from "applied fine" in every artefact
+		// downstream. This promise only makes sense once a pipeline has
+		// opted in by stating a wish; without one, a unit with no
+		// environment recorded just never joins any environment's rollup
+		// below, which fails towards "not automated" rather than towards
+		// a silent gap in a ceiling nobody asked for.
+		for _, u := range r.Units {
+			if u.Environment == "" {
+				return fmt.Errorf(
+					"unit %q has no environment recorded: pass --environment to 'blastdoor plan' so it writes one beside the plan", u.Path)
+			}
+			if _, ok := w.Method(u.Environment); !ok {
+				return fmt.Errorf("unit %q is in environment %q, which the deployment method wish does not name (it names %s)",
+					u.Path, u.Environment, strings.Join(w.Names(), ", "))
+			}
+		}
+		envs = w.Names()
 	}
 
-	// A unit nobody can place would be applied by a job nobody configured, or
-	// by no job at all — and "silently skipped" is indistinguishable from
-	// "applied fine" in every artefact downstream.
-	for _, u := range r.Units {
-		if u.Environment == "" {
-			return fmt.Errorf(
-				"unit %q has no environment recorded: pass --environment to 'blastdoor plan' so it writes one beside the plan", u.Path)
-		}
-		if _, ok := w.Method(u.Environment); !ok {
-			return fmt.Errorf("unit %q is in environment %q, which the deployment method wish does not name (it names %s)",
-				u.Path, u.Environment, strings.Join(w.Names(), ", "))
-		}
+	if len(envs) == 0 {
+		return nil
 	}
 
 	// Repository-wide, so they cannot be attributed to any one environment.
@@ -154,9 +172,10 @@ func (r *Report) Decide(w Wish) error {
 		wide = append(wide, "the change edits files no plan covers")
 	}
 
-	for _, name := range w.Names() {
+	for _, name := range envs {
 		wish, _ := w.Method(name)
 		d := EnvDecision{Name: name, Wish: wish, Method: Manual, Verdict: policy.Pass}
+		policyAuto := true
 
 		for _, u := range r.Units {
 			if u.Environment != name {
@@ -164,6 +183,9 @@ func (r *Report) Decide(w Wish) error {
 			}
 			d.UnitCount++
 			d.Verdict = policy.Worse(d.Verdict, u.Verdict)
+			if !unitAutoFor(u, name) {
+				policyAuto = false
+			}
 		}
 
 		// None is tested first, and the order is load-bearing: an environment
@@ -177,7 +199,7 @@ func (r *Report) Decide(w Wish) error {
 			continue
 		}
 
-		d.Reasons = manualReasons(d, wide)
+		d.Reasons = manualReasons(d, policyAuto, wide)
 		if len(d.Reasons) == 0 {
 			d.Method = Auto
 		}
@@ -186,15 +208,56 @@ func (r *Report) Decide(w Wish) error {
 	return nil
 }
 
+// environmentNames lists the distinct, non-empty environments recorded on the
+// units, in the order they were first seen. A unit with none recorded never
+// contributes a name here — see the comment in Decide about what that means
+// when no wish was stated.
+func environmentNames(units []Unit) []string {
+	var out []string
+	seen := map[string]bool{}
+	for _, u := range units {
+		if u.Environment == "" || seen[u.Environment] {
+			continue
+		}
+		seen[u.Environment] = true
+		out = append(out, u.Environment)
+	}
+	return out
+}
+
+// unitAutoFor reports whether every change in a unit named an environment as
+// safe to automate. A unit with no changes at all — nothing for this
+// environment's plan to apply — is vacuously fine, the same way an empty verdict
+// fold is vacuously Pass.
+func unitAutoFor(u Unit, env string) bool {
+	for _, c := range u.Changes {
+		if c.DeploymentMethod[env] != "auto" {
+			return false
+		}
+	}
+	return true
+}
+
+func containsString(ss []string, s string) bool {
+	for _, v := range ss {
+		if v == s {
+			return true
+		}
+	}
+	return false
+}
+
 // manualReasons lists why an environment cannot apply unattended. Empty means
 // nothing objects, which is the only way to auto.
-func manualReasons(d EnvDecision, wide []string) []string {
+func manualReasons(d EnvDecision, policyAuto bool, wide []string) []string {
 	var out []string
 	if d.Wish == Manual {
 		out = append(out, "the pipeline asks for a manual apply in this environment")
 	}
 	if d.Verdict != policy.Pass {
 		out = append(out, fmt.Sprintf("the verdict here is %s", d.Verdict))
+	} else if !policyAuto {
+		out = append(out, "no policy rule marked this environment safe to automate")
 	}
 	return append(out, wide...)
 }
