@@ -68,7 +68,8 @@ those jobs does nothing.
 first table above rather than here for exactly that reason: `eval`'s
 `--deployment-method-wish` flag defaults from it directly, so it works even
 when nothing turns it into a flag on the command line.
-`BLASTDOOR_APPLY_INCLUDE` is not an exception despite looking like one — it
-only ever reaches blastdoor as the `--apply-include` flag value the template
-passes; the binary has its own hardcoded default and does not read the
-variable back.
+`BLASTDOOR_APPLY_INCLUDE` (and `_PROJECT`/`_REF`) are not exceptions despite
+looking like one — they only ever reach blastdoor as the `--apply-include`,
+`--apply-include-project` and `--apply-include-ref` flag values the template
+passes; the binary has its own hardcoded defaults and does not read the
+variables back.

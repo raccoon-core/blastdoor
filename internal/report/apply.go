@@ -6,6 +6,29 @@ import (
 	"strings"
 )
 
+// ApplyInclude names where the generated pipeline finds .blastdoor:apply.
+// File alone is a `local:` include (the repository's own file, the original
+// and still the default); setting Project switches to `project:`/`ref:`, so a
+// shared .blastdoor:apply can be referenced instead of copied per repository.
+type ApplyInclude struct {
+	File    string
+	Project string
+	Ref     string
+}
+
+func (i ApplyInclude) includeYAML() string {
+	if i.Project == "" {
+		return "include:\n  - local: " + yamlString(i.File) + "\n"
+	}
+	var b strings.Builder
+	b.WriteString("include:\n  - project: " + yamlString(i.Project) + "\n")
+	if i.Ref != "" {
+		b.WriteString("    ref: " + yamlString(i.Ref) + "\n")
+	}
+	b.WriteString("    file: " + yamlString(i.File) + "\n")
+	return b.String()
+}
+
 // WriteApplyYAML writes a child pipeline whose jobs carry a literal `when:`.
 //
 // This file exists because GitLab cannot make this decision from a variable.
@@ -15,9 +38,9 @@ import (
 // place the decision can become a literal the runner will honour.
 //
 // Blastdoor writes the `when:` and nothing else. The image, the credentials and
-// the apply command belong to the repository, which supplies them as a hidden
-// .blastdoor:apply job in the included file — and that file must be guarded,
-// because it runs with the credentials that change infrastructure.
+// the apply command belong to whoever supplies the .blastdoor:apply job named
+// by include, and that source must be guarded, because it runs with the
+// credentials that change infrastructure.
 //
 // This always produces a valid child pipeline, even when every environment
 // resolved to None: a GitLab child pipeline needs at least one job, or the
@@ -27,7 +50,7 @@ import (
 // exists to work around for `when:`). So an all-None report gets a single
 // placeholder job instead of an empty file, and 'blastdoor eval' writes this
 // file unconditionally whenever a wish was stated, never omitting it.
-func (r Report) WriteApplyYAML(w io.Writer, include string) error {
+func (r Report) WriteApplyYAML(w io.Writer, include ApplyInclude) error {
 	var jobs strings.Builder
 	any := false
 	for _, e := range r.Environments {
@@ -72,7 +95,7 @@ func (r Report) WriteApplyYAML(w io.Writer, include string) error {
 		return err
 	}
 
-	b.WriteString("include:\n  - local: " + yamlString(include) + "\n")
+	b.WriteString(include.includeYAML())
 	b.WriteString(jobs.String())
 
 	_, err := io.WriteString(w, b.String())

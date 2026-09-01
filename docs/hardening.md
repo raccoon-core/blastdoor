@@ -49,6 +49,16 @@ directory itself: both are a merge request rewriting the thing that will act on
 its own changes. The template's default `BLASTDOOR_GUARD_PATHS` includes it;
 keep that entry if you change the list.
 
+**`--apply-include-project` moves this protection outside `--guard-path`'s
+reach.** Guarding names a path in *this* repository's diff — once
+`.blastdoor:apply` lives in another project instead, there is no local file
+for a merge request here to rewrite, so the guard entry becomes a no-op rather
+than a hole. The protection then has to come from the shared repository
+itself: its own branch protection and merge-request review are what stand
+between an edit to `.blastdoor:apply` and the next apply that runs it. Treat
+loosening who can push to that repository the same as loosening
+`--guard-path` here.
+
 ### Layered policies let a repository override its company's rules
 
 `policies` in `.blastdoor.yml` orders policy sources by weight, and the

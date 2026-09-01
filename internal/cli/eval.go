@@ -34,8 +34,10 @@ func newEvalCmd() *cobra.Command {
 		ignorePaths     []string
 		root            string
 
-		wishFlag     string
-		applyInclude string
+		wishFlag            string
+		applyInclude        string
+		applyIncludeProject string
+		applyIncludeRef     string
 	)
 
 	cmd := &cobra.Command{
@@ -164,7 +166,8 @@ or --plan-dir at the tree 'blastdoor plan' produced, to judge a whole change.`,
 				return err
 			}
 
-			if err := writeReport(rep, outDir, applyInclude); err != nil {
+			include := report.ApplyInclude{File: applyInclude, Project: applyIncludeProject, Ref: applyIncludeRef}
+			if err := writeReport(rep, outDir, include); err != nil {
 				return err
 			}
 			if err := rep.WriteMarkdown(cmd.OutOrStdout()); err != nil {
@@ -205,7 +208,11 @@ or --plan-dir at the tree 'blastdoor plan' produced, to judge a whole change.`,
 		envOr("BLASTDOOR_DEPLOYMENT_METHOD_WISH", ""),
 		"per-environment ceiling, e.g. int=auto,stg=auto,prd=manual (env: BLASTDOOR_DEPLOYMENT_METHOD_WISH)")
 	cmd.Flags().StringVar(&applyInclude, "apply-include", ".gitlab/blastdoor-apply.yml",
-		"file the generated apply pipeline includes for the repository's .blastdoor:apply job")
+		"file the generated apply pipeline includes for the .blastdoor:apply job")
+	cmd.Flags().StringVar(&applyIncludeProject, "apply-include-project", "",
+		"project the .blastdoor:apply file lives in, if not this repository (switches --apply-include to a project: include)")
+	cmd.Flags().StringVar(&applyIncludeRef, "apply-include-ref", "",
+		"ref to use with --apply-include-project")
 
 	return cmd
 }
@@ -331,7 +338,7 @@ func collectPlans(planFiles []string, planDir string) ([]planInput, error) {
 // writing a single placeholder job when nothing in the change has anything to
 // apply, rather than the jobless include-only file that GitLab refuses to
 // run. See its doc comment.
-func writeReport(rep report.Report, outDir, applyInclude string) error {
+func writeReport(rep report.Report, outDir string, applyInclude report.ApplyInclude) error {
 	if err := os.MkdirAll(outDir, 0o755); err != nil {
 		return fmt.Errorf("creating %s: %w", outDir, err)
 	}

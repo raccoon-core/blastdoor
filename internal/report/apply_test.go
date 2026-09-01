@@ -11,7 +11,7 @@ import (
 func applyYAML(t *testing.T, rep Report) (string, map[string]any) {
 	t.Helper()
 	var b strings.Builder
-	if err := rep.WriteApplyYAML(&b, ".gitlab/blastdoor-apply.yml"); err != nil {
+	if err := rep.WriteApplyYAML(&b, ApplyInclude{File: ".gitlab/blastdoor-apply.yml"}); err != nil {
 		t.Fatalf("WriteApplyYAML: %v", err)
 	}
 	var doc map[string]any
@@ -106,6 +106,37 @@ func TestWriteApplyYAMLIncludesTheRepositoryJob(t *testing.T) {
 	}
 	if got := job(t, doc, "apply:int")["variables"]; got == nil {
 		t.Error("apply:int has no variables block naming its environment")
+	}
+}
+
+func TestWriteApplyYAMLCanIncludeAProject(t *testing.T) {
+	rep := decided(t, "int=auto", []Unit{
+		{Path: "ops/int/a", Environment: "int", Changes: []policy.Change{change("x", policy.Pass, "fine")}},
+	})
+
+	var b strings.Builder
+	err := rep.WriteApplyYAML(&b, ApplyInclude{File: "apply.yml", Project: "group/shared-ci", Ref: "1-latest"})
+	if err != nil {
+		t.Fatalf("WriteApplyYAML: %v", err)
+	}
+	var doc map[string]any
+	if err := yaml.Unmarshal([]byte(b.String()), &doc); err != nil {
+		t.Fatalf("generated YAML does not parse: %v\n%s", err, b.String())
+	}
+
+	includes, ok := doc["include"].([]any)
+	if !ok || len(includes) != 1 {
+		t.Fatalf("include = %v, want one entry", doc["include"])
+	}
+	entry, ok := includes[0].(map[string]any)
+	if !ok {
+		t.Fatalf("include entry = %v, want a mapping", includes[0])
+	}
+	if entry["project"] != "group/shared-ci" || entry["ref"] != "1-latest" || entry["file"] != "apply.yml" {
+		t.Errorf("include entry = %v, want project/ref/file set", entry)
+	}
+	if _, found := entry["local"]; found {
+		t.Errorf("include entry = %v, should not carry local when Project is set", entry)
 	}
 }
 

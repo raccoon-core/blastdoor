@@ -106,31 +106,43 @@ The environment split is the consuming project's own pipeline shape, the same
 way its apply command is; the shared template only threads `--environment
 "$ENV"` through so a project that does this has somewhere to plug it in.
 
-To use this, the repository provides `.gitlab/blastdoor-apply.yml` — named by
-`--apply-include` / `BLASTDOOR_APPLY_INCLUDE`, default
-`.gitlab/blastdoor-apply.yml` — containing a hidden `.blastdoor:apply` job: its
-image, its credentials, and the apply command itself, reading `$BLASTDOOR_ENV`
-to know which environment it is applying. Blastdoor generates the `when:`; it
-has no way to know your image, your credentials, or whether you apply a saved
-plan or re-plan, so it does not generate the job that does the applying.
+To use this, somewhere provides a hidden `.blastdoor:apply` job: its image,
+its credentials, and the apply command itself, reading `$BLASTDOOR_ENV` to
+know which environment it is applying. Blastdoor generates the `when:`; it has
+no way to know your image, your credentials, or whether you apply a saved plan
+or re-plan, so it does not generate the job that does the applying.
 
-A minimal example, obviously a template rather than something to use as-is:
+Two ways to supply it, both via `blastdoor eval`'s flags (or the matching
+`BLASTDOOR_APPLY_INCLUDE*` CI variables):
 
-```yaml
-# .gitlab/blastdoor-apply.yml
-.blastdoor:apply:
-  image: your-terraform-image:tag
-  variables:
-    # However your project supplies credentials to an apply job — a
-    # protected CI/CD variable, OIDC, vault: — goes here, not in this file.
-    TF_VAR_something: $YOUR_APPLY_CREDENTIAL
-  script:
-    - terraform -chdir="environments/$BLASTDOOR_ENV" apply -auto-approve
-```
+- **`--apply-include`** (default `.gitlab/blastdoor-apply.yml`) — a `local:`
+  include, the job lives in the repository being judged. A minimal example,
+  obviously a template rather than something to use as-is:
+
+  ```yaml
+  # .gitlab/blastdoor-apply.yml
+  .blastdoor:apply:
+    image: your-terraform-image:tag
+    variables:
+      # However your project supplies credentials to an apply job — a
+      # protected CI/CD variable, OIDC, vault: — goes here, not in this file.
+      TF_VAR_something: $YOUR_APPLY_CREDENTIAL
+    script:
+      - terraform -chdir="environments/$BLASTDOOR_ENV" apply -auto-approve
+  ```
+
+- **`--apply-include-project`** (optionally with `--apply-include-ref`) — a
+  `project:`/`ref:` include instead, so a single `.blastdoor:apply` defined
+  once in a shared repository can be reused by every consumer, rather than
+  copied into each one. `--apply-include` then names the file *within* that
+  project. Useful when many repositories share the same apply shape (same
+  image, same toolchain, same credential pattern) and would otherwise be
+  maintaining near-identical copies.
 
 `$BLASTDOOR_APPLY_INCLUDE` must stay in `BLASTDOOR_GUARD_PATHS` — see
 [Hardening](hardening.md#the-apply-include-must-be-guarded-too) — because this
-is the file that runs with production credentials.
+is the file that runs with production credentials. That guard only covers the
+`local:` shape, though: see the note there about `--apply-include-project`.
 
 **`strategy: depend` means the parent pipeline waits on this.** `blastdoor:apply`
 triggers the generated pipeline with `strategy: depend`, so the parent mirrors
