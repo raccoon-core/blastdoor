@@ -83,6 +83,15 @@ func Plan(ctx context.Context, unitDir string, opts Options) (Result, error) {
 		fmt.Fprintf(log, "terragrunt wrapping %s (%s)\n", wrapped, why)
 		// TG_TF_PATH is Terragrunt v0.73+; TERRAGRUNT_TFPATH is the older
 		// name. Setting both keeps either version working.
+		//
+		// Set on the process environment, not just cmd.Env below: Terragrunt
+		// defaults to tofu unless something in its own process context says
+		// otherwise, so this has to be ambient before Terragrunt runs, not
+		// just handed to the one exec.Cmd we build it with. Assumes Plan runs
+		// one unit at a time in this process — os.Setenv is global state, not
+		// safe if units are ever planned concurrently from goroutines.
+		os.Setenv("TG_TF_PATH", string(wrapped))
+		os.Setenv("TERRAGRUNT_TFPATH", string(wrapped))
 		extraEnv = append(extraEnv,
 			"TG_TF_PATH="+string(wrapped),
 			"TERRAGRUNT_TFPATH="+string(wrapped))
