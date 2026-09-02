@@ -171,6 +171,13 @@ a Terraform repository gets planned with OpenTofu — quietly, since Terragrunt
 runs whatever `TG_TF_PATH` says. Do not reintroduce a hardcoded default here;
 the fallback to OpenTofu applies only when nothing is pinned anywhere.
 
+`runner.LockedTool` is the fallback before that: unitDir-only (never walks
+up — a lock file is never inherited), reading whether `.terraform.lock.hcl`'s
+header says `"tofu init"` or `"terraform init"`. Checked *after* PinnedTool in
+both `Detect` and `TerragruntTF`, deliberately — an explicit pin is cheaper
+and is the repository's stated intent, which should win over a lock file that
+might just be stale mid-migration.
+
 ### The base ref is resolved, never assumed
 
 `detect.ResolveBaseRef` tries `--base-ref`, then

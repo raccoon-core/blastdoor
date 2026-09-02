@@ -274,3 +274,97 @@ func TestDetectUsesAnAncestorPin(t *testing.T) {
 		t.Errorf("Detect = %q, want %q", got, ToolTerraform)
 	}
 }
+
+const (
+	tofuLockHeader      = "# This file is maintained automatically by \"tofu init\".\n"
+	terraformLockHeader = "# This file is maintained automatically by \"terraform init\".\n"
+)
+
+func TestLockedTool(t *testing.T) {
+	tests := []struct {
+		name    string
+		content string
+		want    Tool
+		found   bool
+	}{
+		{"opentofu wrote it", tofuLockHeader, ToolTofu, true},
+		{"terraform wrote it", terraformLockHeader, ToolTerraform, true},
+		{"no lock file", "", "", false},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := t.TempDir()
+			if tc.content != "" {
+				p := filepath.Join(dir, ".terraform.lock.hcl")
+				if err := os.WriteFile(p, []byte(tc.content), 0o600); err != nil {
+					t.Fatalf("write: %v", err)
+				}
+			}
+			got, ok := LockedTool(dir)
+			if ok != tc.found {
+				t.Fatalf("found = %v, want %v", ok, tc.found)
+			}
+			if ok && got != tc.want {
+				t.Errorf("got %q, want %q", got, tc.want)
+			}
+		})
+	}
+}
+
+// No pin anywhere, but the lock file records what really ran here — trust
+// that over guessing OpenTofu.
+func TestDetectUsesTheLockFileWhenNothingIsPinned(t *testing.T) {
+	unit := t.TempDir()
+	if err := os.WriteFile(filepath.Join(unit, "main.tf"), []byte("# test\n"), 0o600); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(unit, ".terraform.lock.hcl"), []byte(terraformLockHeader), 0o600); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+
+	got, err := Detect(unit)
+	if err != nil {
+		t.Fatalf("Detect: %v", err)
+	}
+	if got != ToolTerraform {
+		t.Errorf("Detect = %q, want %q", got, ToolTerraform)
+	}
+}
+
+// An explicit pin is cheaper to check and is what the repository asked for,
+// so it wins even when the lock file disagrees — e.g. mid-migration, before
+// the unit has been re-initialised with the newly pinned tool.
+func TestPinnedToolWinsOverTheLockFile(t *testing.T) {
+	unit := t.TempDir()
+	if err := os.WriteFile(filepath.Join(unit, ".terraform-version"), []byte("1.2.3\n"), 0o600); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(unit, ".terraform.lock.hcl"), []byte(tofuLockHeader), 0o600); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(unit, "main.tf"), []byte("# test\n"), 0o600); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+
+	got, err := Detect(unit)
+	if err != nil {
+		t.Fatalf("Detect: %v", err)
+	}
+	if got != ToolTerraform {
+		t.Errorf("Detect = %q, want %q: the pin file should win over a tofu-authored lock file", got, ToolTerraform)
+	}
+}
+
+// Terragrunt wraps whichever binary the unit's own lock file names, when
+// nothing above it is pinned.
+func TestTerragruntWrapsTheLockedTool(t *testing.T) {
+	_, unit := repoWith(t, "tf/a/stg", "tf/a/stg/terragrunt.hcl")
+	if err := os.WriteFile(filepath.Join(unit, ".terraform.lock.hcl"), []byte(tofuLockHeader), 0o600); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+
+	wrapped, why := TerragruntTF(context.Background(), unit, ManagerTenv)
+	if wrapped != ToolTofu {
+		t.Errorf("terragrunt would wrap %q (%s), want %q", wrapped, why, ToolTofu)
+	}
+}

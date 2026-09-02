@@ -12,6 +12,7 @@ import (
 	"iter"
 	"os"
 	"path/filepath"
+	"strings"
 )
 
 // Tool selects which binary plans a unit.
@@ -128,16 +129,40 @@ func Detect(unitDir string) (Tool, error) {
 	if pinned, _, ok := PinnedTool(unitDir); ok {
 		return pinned, nil
 	}
+	if tool, ok := LockedTool(unitDir); ok {
+		return tool, nil
+	}
 
 	tf, err := filepath.Glob(filepath.Join(unitDir, "*.tf"))
 	if err != nil {
 		return "", err
 	}
 	if len(tf) > 0 {
-		// Nothing pinned, so OpenTofu.
+		// Nothing pinned or locked, so OpenTofu.
 		return ToolTofu, nil
 	}
 	return "", fmt.Errorf("%s has no terragrunt.hcl and no .tf files — not a unit", unitDir)
+}
+
+// lockFileTofuMarker is the line OpenTofu writes at the top of
+// .terraform.lock.hcl ("# This file is maintained automatically by \"tofu
+// init\"."); Terraform's says "terraform init" instead.
+const lockFileTofuMarker = `"tofu init"`
+
+// LockedTool reports which of OpenTofu/Terraform actually wrote a unit's own
+// .terraform.lock.hcl — unlike PinnedTool, unitDir only, no walking upward:
+// a lock file is never inherited, it's a record of what really ran here.
+// Checked after PinnedTool, not before: an explicit pin is cheaper to read
+// and is the repository saying what it wants, not just what happened last.
+func LockedTool(unitDir string) (tool Tool, ok bool) {
+	raw, err := os.ReadFile(filepath.Join(unitDir, ".terraform.lock.hcl"))
+	if err != nil {
+		return "", false
+	}
+	if strings.Contains(string(raw), lockFileTofuMarker) {
+		return ToolTofu, true
+	}
+	return ToolTerraform, true
 }
 
 // pinFiles are the version files that name a tool, in the order a single
