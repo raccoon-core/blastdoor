@@ -220,7 +220,6 @@ func (r Report) WriteMarkdown(w io.Writer) error {
 
 	b.WriteString(r.heading())
 	b.WriteString(r.headline())
-	b.WriteString(r.environmentTable())
 
 	if len(r.Guarded) > 0 {
 		b.WriteString("\nThis change also edits the rules that judge it, so a person has to look regardless:\n\n")
@@ -246,6 +245,9 @@ func (r Report) WriteMarkdown(w io.Writer) error {
 	default:
 		b.WriteString(r.verdictTable())
 	}
+
+	b.WriteString("\nHere is the expected deployment method for this change")
+	b.WriteString(r.deploymentTable())
 
 	// Last, deliberately. Which policies judged the change is what a reader
 	// goes looking for after reading the verdict, not before — it answers a
@@ -289,12 +291,12 @@ func (r Report) verdictTable() string {
 	return b.String()
 }
 
-// environmentTable says what the apply will do, per environment.
+// deploymentTable says what the apply will do, per environment.
 //
 // Above the verdict table deliberately. "What does this change contain" and
 // "what will approving it cause" are different questions, and the second is the
 // one a reviewer is answering when they click approve.
-func (r Report) environmentTable() string {
+func (r Report) deploymentTable() string {
 	if len(r.Environments) == 0 {
 		return ""
 	}
