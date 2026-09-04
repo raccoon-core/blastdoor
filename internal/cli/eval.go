@@ -33,6 +33,11 @@ func newEvalCmd() *cobra.Command {
 		requireCoverage bool
 		ignorePaths     []string
 		root            string
+
+		wishFlag            string
+		applyInclude        string
+		applyIncludeProject string
+		applyIncludeRef     string
 	)
 
 	cmd := &cobra.Command{
@@ -148,7 +153,21 @@ or --plan-dir at the tree 'blastdoor plan' produced, to judge a whole change.`,
 				rep.RequireCoverage(missing)
 			}
 
-			if err := writeReport(rep, outDir); err != nil {
+			wish, err := report.ParseWish(wishFlag)
+			if err != nil {
+				return err
+			}
+			// After the guards, deliberately. Both RequireReview and
+			// RequireCoverage force review across the whole repository, and an
+			// environment cannot apply unattended while the change is
+			// rewriting the rules that judge it — but Decide can only see that
+			// once they have recorded it.
+			if err := rep.Decide(wish); err != nil {
+				return err
+			}
+
+			include := report.ApplyInclude{File: applyInclude, Project: applyIncludeProject, Ref: applyIncludeRef}
+			if err := writeReport(rep, outDir, include); err != nil {
 				return err
 			}
 			if err := rep.WriteMarkdown(cmd.OutOrStdout()); err != nil {
@@ -179,6 +198,21 @@ or --plan-dir at the tree 'blastdoor plan' produced, to judge a whole change.`,
 	cmd.Flags().BoolVar(&requireCoverage, "require-coverage", false, "force review when the change edits files no unit selects")
 	cmd.Flags().StringArrayVar(&ignorePaths, "ignore-path", nil, "path --require-coverage may leave unplanned (repeatable)")
 	cmd.Flags().StringVar(&root, "root", ".", "directory to scan for units when checking coverage")
+
+	// Deliberately not readable from .blastdoor.yml, and this needs no code:
+	// the config decoder runs with KnownFields(true), so an `environments:` key
+	// rejects the whole file. A branch declaring prd=auto would be a branch
+	// arranging its own unattended production apply — the same reasoning that
+	// keeps the approver group ids out of the branch's hands in gate.go.
+	cmd.Flags().StringVar(&wishFlag, "deployment-method-wish",
+		envOr("BLASTDOOR_DEPLOYMENT_METHOD_WISH", ""),
+		"per-environment ceiling, e.g. int=auto,stg=auto,prd=manual (env: BLASTDOOR_DEPLOYMENT_METHOD_WISH)")
+	cmd.Flags().StringVar(&applyInclude, "apply-include", ".gitlab/blastdoor-apply.yml",
+		"file the generated apply pipeline includes for the .blastdoor:apply job")
+	cmd.Flags().StringVar(&applyIncludeProject, "apply-include-project", "",
+		"project the .blastdoor:apply file lives in, if not this repository (switches --apply-include to a project: include)")
+	cmd.Flags().StringVar(&applyIncludeRef, "apply-include-ref", "",
+		"ref to use with --apply-include-project")
 
 	return cmd
 }
@@ -212,7 +246,11 @@ func judgePlans(ctx context.Context, evaluator *policy.Evaluator, plans []planIn
 		if err != nil {
 			return nil, fmt.Errorf("%s: %w", p.file, err)
 		}
-		units = append(units, report.Unit{Path: p.name, Changes: res.Changes})
+		units = append(units, report.Unit{
+			Path:        p.name,
+			Environment: environmentFor(p.file),
+			Changes:     res.Changes,
+		})
 	}
 	return units, nil
 }
@@ -285,8 +323,22 @@ func collectPlans(planFiles []string, planDir string) ([]planInput, error) {
 	return out, nil
 }
 
-// writeReport writes the three output files the CI jobs consume.
-func writeReport(rep report.Report, outDir string) error {
+// writeReport writes the files the CI jobs consume.
+//
+// apply.gitlab-ci.yml is written whenever Decide found at least one
+// environment to decide about — len(rep.Environments) > 0 — which no longer
+// requires a wish: Decide folds in whatever environments the units
+// themselves recorded, and policy's own allow rules can authorise auto on
+// their own. Every environment Decide considered gets an EnvDecision,
+// including ones that resolved to none, so this is exactly "there is
+// something to decide about." That case (the ordinary one for a docs-only or
+// CI-only change, or a repository that has not arranged per-environment
+// planning at all) does not need special handling here: WriteApplyYAML
+// itself always produces a file GitLab can build a child pipeline from,
+// writing a single placeholder job when nothing in the change has anything to
+// apply, rather than the jobless include-only file that GitLab refuses to
+// run. See its doc comment.
+func writeReport(rep report.Report, outDir string, applyInclude report.ApplyInclude) error {
 	if err := os.MkdirAll(outDir, 0o755); err != nil {
 		return fmt.Errorf("creating %s: %w", outDir, err)
 	}
@@ -298,6 +350,15 @@ func writeReport(rep report.Report, outDir string) error {
 		{"report.json", rep.WriteJSON},
 		{"summary.md", rep.WriteMarkdown},
 		{"blastdoor.env", rep.WriteEnv},
+	}
+
+	if len(rep.Environments) > 0 {
+		files = append(files, struct {
+			name  string
+			write func(io.Writer) error
+		}{"apply.gitlab-ci.yml", func(w io.Writer) error {
+			return rep.WriteApplyYAML(w, applyInclude)
+		}})
 	}
 
 	for _, f := range files {
@@ -357,6 +418,21 @@ func enginesFor(plans []planInput) []string {
 		out = append(out, engine)
 	}
 	return out
+}
+
+// environmentFor reads back the environment 'blastdoor plan --environment'
+// recorded beside a plan.
+//
+// A missing file is silence, not an error: plans passed straight to --plan have
+// no environment recorded, and neither do plans from a blastdoor old enough not
+// to have written one. Report.Decide reports it, and only when a deployment
+// method wish makes it matter.
+func environmentFor(planFile string) string {
+	raw, err := os.ReadFile(filepath.Join(filepath.Dir(planFile), "environment.txt"))
+	if err != nil {
+		return ""
+	}
+	return strings.TrimSpace(string(raw))
 }
 
 // uncoveredFiles lists the changed files that select no unit, less the ones

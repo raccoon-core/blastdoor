@@ -31,16 +31,32 @@ variables:
   BLASTDOOR_POLICY_DIR: policy
   # Directory to scan for units.
   BLASTDOOR_ROOT: .
+  # The file the generated apply pipeline includes, holding the repository's own
+  # .blastdoor:apply job — its image, its credentials, its apply command.
+  # Defined here, ahead of BLASTDOOR_GUARD_PATHS below, because that variable
+  # expands it by reference and a reader should be able to find it defined on
+  # the way down rather than the way back up.
+  BLASTDOOR_APPLY_INCLUDE: .gitlab/blastdoor-apply.yml
   # Paths that force human review when a merge request changes them, whatever
   # the verdict. Without this, a change can rewrite the policies that judge it,
   # or the pipeline that runs them, in the same commit.
   # .blastdoor.yml is listed here as a floor. Blastdoor guards its own config
   # whenever it loads one, but that catches an edit, not a deletion: a config
   # that is gone cannot ask to be guarded. Naming it here covers the deletion.
+  # $BLASTDOOR_APPLY_INCLUDE is guarded because it is the script that applies
+  # infrastructure. A merge request that can rewrite it unreviewed can run
+  # anything in a job holding production credentials, after the gate has
+  # already passed. This ranks with guarding the policy directory itself — and
+  # it has to be the variable, not a hardcoded copy of its default: a project
+  # that repoints BLASTDOOR_APPLY_INCLUDE elsewhere must not thereby unguard
+  # the file that actually runs with production credentials. Nested variables
+  # expand here the same way $BLASTDOOR_POLICY_DIR already does above; this is
+  # GitLab's own variable expansion, unrelated to the shell word-splitting
+  # `blastdoor:eval` does to read this list.
   #
   # Keep this variable set. Guard paths are an override, not a merge, so a
   # pipeline that passes none hands the guard list to the branch being judged.
-  BLASTDOOR_GUARD_PATHS: ".blastdoor.yml $BLASTDOOR_POLICY_DIR .gitlab-ci.yml"
+  BLASTDOOR_GUARD_PATHS: ".blastdoor.yml $BLASTDOOR_POLICY_DIR .gitlab-ci.yml $BLASTDOOR_APPLY_INCLUDE"
   # Paths allowed to change without any unit planning them. Everything else a
   # merge request touches that selects no unit forces a review: a file no plan
   # covers is a file no policy has read. Docs and runbooks belong here; a
@@ -49,6 +65,14 @@ variables:
   # Where remote policy layers are checked out, when .blastdoor.yml names any.
   # Under the workspace so this job can cache it; add it to .gitignore.
   BLASTDOOR_POLICY_CACHE: .blastdoor-policies
+  # The ceiling for each environment's apply, stated by the pipeline rather than
+  # by .blastdoor.yml. A branch declaring prd=auto would be a branch arranging
+  # its own unattended production apply, so this is not readable from the
+  # repository's config at all — blastdoor rejects an `environments:` key there.
+  #
+  # Leave it empty and the whole feature is off: no new dotenv keys, no
+  # generated pipeline, no change in behaviour.
+  BLASTDOOR_DEPLOYMENT_METHOD_WISH: ""
 
 .blastdoor:rules:
   # Run on merge request pipelines, and on branch pipelines that no merge
@@ -58,6 +82,10 @@ variables:
   default:
     - if: $CI_PIPELINE_SOURCE == "merge_request_event"
     - if: $CI_COMMIT_BRANCH && $CI_COMMIT_BRANCH != $CI_DEFAULT_BRANCH && $CI_OPEN_MERGE_REQUESTS == null
+  # The apply side. Only on the default branch, and only when a wish was
+  # stated — without one there is no generated pipeline to trigger.
+  main:
+    - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH && $BLASTDOOR_DEPLOYMENT_METHOD_WISH != ""
 
 # Installs the tool versions each unit asks for, then plans every unit the
 # change touches. Version selection belongs to tenv or mise, whichever
@@ -67,13 +95,30 @@ blastdoor:plan:
   image: $BLASTDOOR_IMAGE
   rules:
     - !reference [".blastdoor:rules", default]
+    - !reference [".blastdoor:rules", main]
   script:
     - mkdir -p "$BLASTDOOR_DIR"
-    - blastdoor detect --root "$BLASTDOOR_ROOT" | tee "$BLASTDOOR_DIR/units.txt"
+    # On the default branch there is no merge base to diff against — it IS the
+    # default branch, so the merge base is HEAD and the diff would be empty.
+    # The previous commit is what "what did this change" means here. Blastdoor
+    # rejects the all-zero value GitLab puts in CI_COMMIT_BEFORE_SHA on a
+    # branch's first pipeline rather than diffing against nothing.
+    - |
+      base_ref_arg=""
+      if [ "$CI_COMMIT_BRANCH" = "$CI_DEFAULT_BRANCH" ]; then
+        base_ref_arg="--base-ref $CI_COMMIT_BEFORE_SHA"
+      fi
+    - blastdoor detect --root "$BLASTDOOR_ROOT" $base_ref_arg | tee "$BLASTDOOR_DIR/units.txt"
     # Install the tool versions first, in the same job: a toolchain that will
     # not install should not look like a plan that will not run.
     - blastdoor prepare --units-file "$BLASTDOOR_DIR/units.txt"
-    - blastdoor plan --units-file "$BLASTDOOR_DIR/units.txt" --out-dir "$BLASTDOOR_DIR"
+    # --environment records which environment this job planned, for 'eval' to
+    # fold into a deployment method. $ENV is empty by default: this job plans
+    # one unit list in one run. A project that plans int, stg and prd as
+    # separate legs overrides this job with its own parallel:matrix supplying
+    # ENV and a per-environment --units-file; left alone, --environment "" is
+    # inert — no environment.txt is written, and the feature stays off.
+    - blastdoor plan --units-file "$BLASTDOOR_DIR/units.txt" --out-dir "$BLASTDOOR_DIR" --environment "$ENV" $base_ref_arg
   artifacts:
     paths:
       - $BLASTDOOR_DIR/
@@ -93,8 +138,19 @@ blastdoor:eval:
       artifacts: true
   rules:
     - !reference [".blastdoor:rules", default]
+    - !reference [".blastdoor:rules", main]
   script:
     - |
+      # On the default branch there is no merge base to diff against — it IS
+      # the default branch, so the merge base is HEAD and the diff would be
+      # empty. The previous commit is what "what did this change" means here.
+      # Blastdoor rejects the all-zero value GitLab puts in
+      # CI_COMMIT_BEFORE_SHA on a branch's first pipeline rather than diffing
+      # against nothing.
+      base_ref_arg=""
+      if [ "$CI_COMMIT_BRANCH" = "$CI_DEFAULT_BRANCH" ]; then
+        base_ref_arg="--base-ref $CI_COMMIT_BEFORE_SHA"
+      fi
       # Word-split the lists without letting the shell expand them: a pattern
       # like **/README.md is for blastdoor to interpret, and the shell would
       # otherwise rewrite it into whatever paths happen to exist here.
@@ -111,6 +167,9 @@ blastdoor:eval:
         --out-dir "$BLASTDOOR_DIR" \
         --root "$BLASTDOOR_ROOT" \
         --require-coverage \
+        --deployment-method-wish "$BLASTDOOR_DEPLOYMENT_METHOD_WISH" \
+        --apply-include "$BLASTDOOR_APPLY_INCLUDE" \
+        $base_ref_arg \
         $guards $ignores
   artifacts:
     reports:
@@ -118,6 +177,7 @@ blastdoor:eval:
     paths:
       - $BLASTDOOR_DIR/report.json
       - $BLASTDOOR_DIR/summary.md
+      - $BLASTDOOR_DIR/apply.gitlab-ci.yml
     expire_in: 1 day
 
 # pass -> approves; review -> requires a human approval; deny -> also fails the
@@ -145,3 +205,40 @@ blastdoor:gate:
     - !reference [".blastdoor:rules", default]
   script:
     - blastdoor gate --report "$BLASTDOOR_DIR/report.json" --summary "$BLASTDOOR_DIR/summary.md" --approval-rule
+
+# Runs the pipeline 'blastdoor eval' generated, whose jobs carry a literal
+# when: — which is the only way this decision can reach GitLab. `when:` does not
+# expand a variable, and rules: are evaluated before blastdoor.env exists.
+#
+# stage: .post, not a named stage. GitLab checks every job's stage against the
+# pipeline's stages: during YAML processing, before rules: are evaluated — so a
+# stage this template invented would fail pipeline *creation* for every
+# consumer, wish or no wish, unless they first edited their stages: list. .pre
+# and .post always exist and never need declaring, so this job costs a
+# consumer nothing to adopt.
+#
+# eval always writes apply.gitlab-ci.yml when the main rule below fires (a
+# wish was stated on the default branch), so the artifact this job includes is
+# always there to find. An all-none change — the ordinary case for a docs-only
+# or CI-only commit — still gets a file; WriteApplyYAML gives it a single
+# placeholder job rather than leaving the file jobless or unwritten, because
+# GitLab refuses to build a child pipeline with no jobs in it, and there is no
+# rules: condition able to route around a missing artifact after the fact:
+# rules: are evaluated at pipeline creation, before blastdoor:eval has run,
+# the same limitation that keeps this decision out of `when:` in the first
+# place (see the comment above blastdoor:eval). Do not reach for
+# allow_failure: true as a substitute for this: strategy: depend is what makes
+# a real apply failure in prd turn the parent pipeline red, and allow_failure
+# would swallow that along with everything else.
+blastdoor:apply:
+  stage: .post
+  needs:
+    - job: blastdoor:eval
+      artifacts: true
+  rules:
+    - !reference [".blastdoor:rules", main]
+  trigger:
+    include:
+      - artifact: $BLASTDOOR_DIR/apply.gitlab-ci.yml
+        job: blastdoor:eval
+    strategy: depend

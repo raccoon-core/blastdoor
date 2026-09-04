@@ -103,8 +103,8 @@ func TestLoadsSingleRegoFile(t *testing.T) {
 }
 
 // Policy paths that hold no policies are a mistake — a mistyped path, a wrong
-// subdirectory. Left alone it reads as "every change denied", which looks like
-// a verdict rather than an error.
+// subdirectory. Left alone it reads as "every change needs review", which
+// looks like a verdict rather than an error.
 func TestErrorsWhenPathsHoldNoRego(t *testing.T) {
 	dir := writeTree(t, map[string]string{"README.md": "# no policies here"})
 
@@ -127,9 +127,9 @@ func TestErrorsWhenPolicyPathMissing(t *testing.T) {
 }
 
 // No --policy at all stays legal: every change is then unjudged, which the
-// evaluator denies on its own.
+// evaluator sends to review on its own.
 func TestNoPolicyPathsIsNotAnError(t *testing.T) {
-	if got := judgeIn(t).Verdict; got != Deny {
-		t.Fatalf("verdict without policies: %s, want %s", got, Deny)
+	if got := judgeIn(t).Verdict; got != Review {
+		t.Fatalf("verdict without policies: %s, want %s", got, Review)
 	}
 }

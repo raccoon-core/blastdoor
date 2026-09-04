@@ -65,16 +65,16 @@ func verdictFor(t *testing.T, res Result, address string) Change {
 	return Change{}
 }
 
-// The core promise: no rule, no entry.
-func TestUnjudgedChangeIsDenied(t *testing.T) {
+// The core promise: no rule, no pass — but not a hard block either.
+func TestUnjudgedChangeIsSentToReview(t *testing.T) {
 	res := judge(t, "", planDoc(change("aws_iam_policy.admin", "aws_iam_policy", "create")))
 
-	if res.Verdict != Deny {
-		t.Errorf("verdict = %q, want %q", res.Verdict, Deny)
+	if res.Verdict != Review {
+		t.Errorf("verdict = %q, want %q", res.Verdict, Review)
 	}
 	c := verdictFor(t, res, "aws_iam_policy.admin")
-	if c.Verdict != Deny {
-		t.Errorf("change verdict = %q, want %q", c.Verdict, Deny)
+	if c.Verdict != Review {
+		t.Errorf("change verdict = %q, want %q", c.Verdict, Review)
 	}
 	if len(c.Reasons) != 1 || c.Reasons[0] != ReasonUnjudged {
 		t.Errorf("reasons = %v, want [%q]", c.Reasons, ReasonUnjudged)
@@ -84,15 +84,15 @@ func TestUnjudgedChangeIsDenied(t *testing.T) {
 	}
 }
 
-// Every action shape needs a rule; none of them slips through unjudged.
+// Every action shape needs a rule; none of them slips through as a pass.
 func TestEveryActionNeedsARule(t *testing.T) {
 	for _, actions := range [][]string{
 		{"create"}, {"update"}, {"delete"},
 		{"create", "delete"}, {"delete", "create"}, {"read"},
 	} {
 		res := judge(t, "", planDoc(change("x.y", "x", actions...)))
-		if res.Verdict != Deny {
-			t.Errorf("actions %v: verdict = %q, want %q", actions, res.Verdict, Deny)
+		if res.Verdict != Review {
+			t.Errorf("actions %v: verdict = %q, want %q", actions, res.Verdict, Review)
 		}
 	}
 }
@@ -218,8 +218,8 @@ allow contains {"resource": rc.address, "reason": "creating is fine"} if {
 	if verdictFor(t, res, "x.created").Verdict != Pass {
 		t.Error("the create should pass")
 	}
-	if got := verdictFor(t, res, "x.deleted").Verdict; got != Deny {
-		t.Errorf("the delete verdict = %q, want %q — it was never judged", got, Deny)
+	if got := verdictFor(t, res, "x.deleted").Verdict; got != Review {
+		t.Errorf("the delete verdict = %q, want %q — it was never judged", got, Review)
 	}
 }
 
@@ -306,6 +306,109 @@ func TestValidatePlanAcceptsRealPlans(t *testing.T) {
 			}
 		})
 	}
+}
+
+// An allow rule can name, per environment, whether it considers that
+// environment safe to automate.
+func TestAllowCanNameDeploymentMethod(t *testing.T) {
+	policy := `package blastdoor
+
+allow contains {"resource": rc.address, "reason": "fine", "deployment_method": {"int": "auto", "prd": "auto", "stg": "manual"}} if {
+	some rc in input.resource_changes
+}
+`
+	res := judge(t, policy, planDoc(change("x.y", "x", "create")))
+	c := verdictFor(t, res, "x.y")
+	want := map[string]string{"int": "auto", "prd": "auto"}
+	if !stringsMapEqual(c.DeploymentMethod, want) {
+		t.Errorf("DeploymentMethod = %v, want %v — stg was named \"manual\", so it should not appear", c.DeploymentMethod, want)
+	}
+}
+
+// A rule silent on automation is the default: it passes the change but
+// vouches for nothing.
+func TestDeploymentMethodIsEmptyWithoutAnnotation(t *testing.T) {
+	res := judge(t, allowEverything, planDoc(change("x.y", "x", "create")))
+	c := verdictFor(t, res, "x.y")
+	if len(c.DeploymentMethod) != 0 {
+		t.Errorf("DeploymentMethod = %v, want none: the rule never mentioned it", c.DeploymentMethod)
+	}
+}
+
+// Two allow rules can match the same change, and both have to say "auto" for
+// an environment before it counts — the same way one denying rule is enough
+// to keep the whole change from passing.
+func TestDeploymentMethodIsTheIntersectionOfEveryMatchingRule(t *testing.T) {
+	policy := `package blastdoor
+
+allow contains {"resource": rc.address, "reason": "narrow rule", "deployment_method": {"int": "auto", "stg": "auto", "prd": "auto"}} if {
+	some rc in input.resource_changes
+	rc.type == "x"
+}
+
+allow contains {"resource": rc.address, "reason": "wide rule, silent on automation"} if {
+	some rc in input.resource_changes
+}
+`
+	res := judge(t, policy, planDoc(change("x.y", "x", "create")))
+	c := verdictFor(t, res, "x.y")
+	if len(c.DeploymentMethod) != 0 {
+		t.Errorf("DeploymentMethod = %v, want none: one matching rule named no environment at all", c.DeploymentMethod)
+	}
+}
+
+// A change sent to review is never a candidate for automation, whatever an
+// allow rule matching the same resource said.
+func TestDeploymentMethodIsClearedWhenTheVerdictIsNotPass(t *testing.T) {
+	policy := `package blastdoor
+
+allow contains {"resource": rc.address, "reason": "fine", "deployment_method": {"int": "auto"}} if {
+	some rc in input.resource_changes
+}
+
+review contains {"resource": rc.address, "reason": "look at it"} if {
+	some rc in input.resource_changes
+}
+`
+	res := judge(t, policy, planDoc(change("x.y", "x", "create")))
+	c := verdictFor(t, res, "x.y")
+	if c.Verdict != Review {
+		t.Fatalf("verdict = %q, want %q", c.Verdict, Review)
+	}
+	if len(c.DeploymentMethod) != 0 {
+		t.Errorf("DeploymentMethod = %v, want none: the verdict is review, not pass", c.DeploymentMethod)
+	}
+}
+
+// A rule naming a method other than "auto" or "manual" is a mistake to
+// report, not a value to guess about.
+func TestDeploymentMethodRejectsAnUnknownValue(t *testing.T) {
+	policy := `package blastdoor
+
+allow contains {"resource": rc.address, "reason": "fine", "deployment_method": {"int": "sometimes"}} if {
+	some rc in input.resource_changes
+}
+`
+	dir := writePolicy(t, policy)
+	e, err := New(context.Background(), Options{PolicyPaths: []string{dir}})
+	if err != nil {
+		t.Fatalf("compiling policies: %v", err)
+	}
+	if _, err := e.Evaluate(context.Background(), planDoc(change("x.y", "x", "create"))); err == nil {
+		t.Error("Evaluate = nil error, want one: \"sometimes\" is not \"auto\" or \"manual\"")
+	}
+}
+
+func stringsMapEqual(a, b map[string]string) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for k, v := range a {
+		if b[k] != v {
+			return false
+		}
+	}
+	return true
 }
 
 func TestWorse(t *testing.T) {

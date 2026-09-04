@@ -26,7 +26,7 @@ Each layer is fetched at its ref and evaluated on its own. For one change,
 **the highest-weight layer that judged it at all decides it** — a layer that
 says nothing falls through to the next one down, which is what lets a tier add
 rules without restating the ones beneath it. A change no layer judges is still
-denied.
+sent to review.
 
 Weights must be unique: two layers at the same weight have no order between
 them. A remote layer must name a `ref`, and every layer must state a `weight` —

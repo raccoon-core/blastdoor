@@ -51,9 +51,10 @@ one.
 
 Two invariants carry the whole tool, and both live in `internal/policy`:
 
-- **A change no rule matches is denied.** `Evaluate` decides that from the plan
-  itself, not from a policy rule that has to fire — a rule that does not run
-  must not be the difference between judged and waved through.
+- **A change no rule matches is sent to review, never passed.** `Evaluate`
+  decides that from the plan itself, not from a policy rule that has to
+  fire — a rule that does not run must not be the difference between judged
+  and waved through unattended.
 - **The most severe matching verdict wins** (`Worse`). This is what makes rules
   safe to add: a new one can only ever tighten the outcome, so nobody weakens
   the gate by contributing.
@@ -62,6 +63,29 @@ Be deliberate about anything that could let a change through unjudged, and add
 a test that would fail if it did. There is no score and no threshold; if you
 find yourself reaching for one, the question is probably which of the three
 verdicts a change deserves.
+
+## Writing rules that scale
+
+Two different costs live in `internal/policy`, and they scale differently as
+a policy repository grows:
+
+- **Compiling a layer** happens once per `blastdoor eval` run, and its cost is
+  the total size of that layer's `.rego` — every file under a configured
+  `directory:` gets parsed and type-checked, whether or not it applies to
+  this plan. `compileLayer` asks all three rule sets (`allow`/`review`/`deny`)
+  in one combined query, so a layer's modules are compiled once rather than
+  three times, but that only removes a constant factor — it does not make
+  compile time independent of file count. The actual lever is scoping each
+  layer's `directory:` to the resource types a pipeline provisions, rather
+  than pointing every consumer at one monolithic `policies/`.
+- **Evaluating a layer** happens once per unit, against that unit's whole
+  plan. OPA indexes rule bodies that lead with a simple equality on an
+  unnested reference (`rc.type == "kafka_topic"`, the shape every rule in
+  `examples/policies/kafka.rego` already uses) so it can skip whole rule
+  bodies that cannot match a given change, instead of evaluating every rule
+  against every `resource_change`. Keep that equality first in a rule body;
+  put helper predicates like `wildcard()` or `shrinks()` after it, not
+  instead of it, or they lose the benefit of being skippable.
 
 ## Adding support for another forge
 

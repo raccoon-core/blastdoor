@@ -14,9 +14,12 @@ import (
 
 // Unit is one planned directory and what the policies made of it.
 type Unit struct {
-	Path    string          `json:"path"`
-	Verdict policy.Verdict  `json:"verdict"`
-	Changes []policy.Change `json:"changes"`
+	Path string `json:"path"`
+	// Environment is what 'blastdoor plan --environment' recorded beside this
+	// unit's plan. Empty when nothing recorded one.
+	Environment string          `json:"environment,omitempty"`
+	Verdict     policy.Verdict  `json:"verdict"`
+	Changes     []policy.Change `json:"changes"`
 }
 
 // Report is the complete result of an evaluation run.
@@ -38,6 +41,13 @@ type Report struct {
 	// Engines names what produced the plans — terraform, tofu, or both while
 	// a repository is moving between them. Empty when nothing recorded it.
 	Engines []string `json:"engines,omitempty"`
+	// Environments says, per environment, whether this change may be applied
+	// unattended. Empty when no unit carries an environment at all — see
+	// Decide — which is what turns the feature off for a repository that has
+	// not arranged per-environment planning. A wish is not required: policy's
+	// own allow rules can authorise auto on their own, and a wish, when
+	// stated, only ever narrows what they allow.
+	Environments []EnvDecision `json:"environments,omitempty"`
 }
 
 // Layer is one policy tier and where it came from.
@@ -185,11 +195,23 @@ func (r Report) WriteJSON(w io.Writer) error {
 
 // WriteEnv writes a dotenv file, for GitLab's `artifacts:reports:dotenv` to
 // pass the verdict to later jobs.
+//
+// The deployment methods are a record, not a mechanism: GitLab's `when:` does
+// not expand a variable, and `rules:` — which can set `when:` — is evaluated at
+// pipeline creation, before this file exists. WriteApplyYAML is what actually
+// carries the decision into a job.
 func (r Report) WriteEnv(w io.Writer) error {
-	_, err := fmt.Fprintf(w,
+	if _, err := fmt.Fprintf(w,
 		"BLASTDOOR_VERDICT=%s\nBLASTDOOR_UNIT_COUNT=%d\nBLASTDOOR_PASS_COUNT=%d\nBLASTDOOR_REVIEW_COUNT=%d\nBLASTDOOR_DENY_COUNT=%d\n",
-		r.Verdict, r.UnitCount, r.Counts[policy.Pass], r.Counts[policy.Review], r.Counts[policy.Deny])
-	return err
+		r.Verdict, r.UnitCount, r.Counts[policy.Pass], r.Counts[policy.Review], r.Counts[policy.Deny]); err != nil {
+		return err
+	}
+	for _, e := range r.Environments {
+		if _, err := fmt.Fprintf(w, "BLASTDOOR_DEPLOY_%s=%s\n", strings.ToUpper(e.Name), e.Method); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 // WriteMarkdown writes the human-readable summary posted to the merge request.
@@ -223,6 +245,9 @@ func (r Report) WriteMarkdown(w io.Writer) error {
 	default:
 		b.WriteString(r.verdictTable())
 	}
+
+	b.WriteString("\nHere is the expected deployment method for this change")
+	b.WriteString(r.deploymentTable())
 
 	// Last, deliberately. Which policies judged the change is what a reader
 	// goes looking for after reading the verdict, not before — it answers a
@@ -264,6 +289,43 @@ func (r Report) verdictTable() string {
 		}
 	}
 	return b.String()
+}
+
+// deploymentTable says what the apply will do, per environment.
+//
+// Below the verdict table deliberately. "What does this change contain" and
+// "what will approving it cause" are different questions, and a reviewer
+// reads the first before the second.
+func (r Report) deploymentTable() string {
+	if len(r.Environments) == 0 {
+		return ""
+	}
+
+	var b strings.Builder
+	b.WriteString("\n| Environment | Apply | Why |\n|---|---|---|\n")
+	for _, e := range r.Environments {
+		b.WriteString(fmt.Sprintf("| %s | %s | %s |\n",
+			escapePipes(e.Name),
+			methodMarker(e.Method),
+			escapePipes(strings.Join(e.Reasons, "; "))))
+	}
+	return b.String()
+}
+
+// methodMarker is the symbol for a deployment method.
+//
+// The word is always kept alongside the symbol, for the same reason emoji()
+// keeps it: a symbol alone is lost to a screen reader and to a plain-text copy
+// of the note.
+func methodMarker(m Method) string {
+	switch m {
+	case Auto:
+		return "✅ auto"
+	case Manual:
+		return "✋ manual"
+	default:
+		return "— none"
+	}
 }
 
 // layerBlock lists the policies that judged this run.
@@ -314,12 +376,7 @@ func (r Report) headline() string {
 func (r Report) verdictSentence(pass, review, deny int) string {
 	switch r.Verdict {
 	case policy.Deny:
-		unjudged := r.unjudgedCount()
-		line := fmt.Sprintf("**Denied** — %d change(s) a policy does not allow.", deny)
-		if unjudged > 0 {
-			line += fmt.Sprintf(" %d of those have no policy at all; write a rule for them, or drop them from this change.", unjudged)
-		}
-		return line + " Approving does not clear this.\n"
+		return fmt.Sprintf("**Denied** — %d change(s) a policy does not allow. Approving does not clear this.\n", deny)
 	case policy.Review:
 		// A review can be forced by paths rather than by scored changes —
 		// a guarded file, or one no plan covers. Counting changes then
@@ -329,7 +386,11 @@ func (r Report) verdictSentence(pass, review, deny int) string {
 		if review == 0 && pass == 0 && deny == 0 {
 			return "**Review required** — a person has to look at this change. Nothing in it was scored.\n"
 		}
-		return fmt.Sprintf("**Review required** — %d change(s) need a person to approve, %d passed.\n", review, pass)
+		line := fmt.Sprintf("**Review required** — %d change(s) need a person to approve, %d passed.", review, pass)
+		if unjudged := r.unjudgedCount(); unjudged > 0 {
+			line += fmt.Sprintf(" %d of those have no policy at all; write a rule for them, or drop them from this change.", unjudged)
+		}
+		return line + "\n"
 	default:
 		return fmt.Sprintf("**Pass** — every one of the %d change(s) is allowed by policy.\n", pass)
 	}

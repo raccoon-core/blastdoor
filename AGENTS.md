@@ -29,7 +29,8 @@ that way. If you add behaviour, add a test that would fail without it.
 Every resource change in a plan gets one verdict: `pass`, `review` or `deny`.
 Policies are Rego in `package blastdoor` contributing to `allow`, `review` and
 `deny` rule sets, each entry an object with `resource` and `reason`. The worst
-verdict of any change decides the plan. A change no rule matches is denied.
+verdict of any change decides the plan. A change no rule matches is sent to
+review — silence is not consent, but it does not hard-block either.
 
 ## Load-bearing decisions, do not quietly undo
 
@@ -44,11 +45,17 @@ threshold was a magic number, and three unrelated changes could add past it.
 **Do not reintroduce scores, weights or thresholds.** If a change seems to need
 one, the real question is which of the three verdicts it deserves.
 
-### A change no rule matches is denied, and Go decides that
+### A change no rule matches is sent to review, and Go decides that
 
 `policy.Evaluate` computes the unmatched set from the plan itself. It is
 deliberately *not* a Rego rule, because a rule that fails to fire — or that
-someone disables — must not be the difference between judged and waved through.
+someone disables — must not be the difference between judged and waved
+through unattended. It used to deny outright (2026-09-04: changed to review)
+— an unjudged change still cannot pass and still cannot auto-apply
+(`DeploymentMethod` is only ever set on `Pass`, see `internal/report`'s
+`Decide`), but it no longer hard-fails the pipeline on its own; it needs a
+person's approval, the same as an explicit `review` rule. A change an
+explicit `deny` rule matches is unaffected — that still hard-blocks.
 
 Keep that computation in Go. There is no "default policy" file any more, and
 adding one back would move the tool's central guarantee into something a
@@ -171,6 +178,13 @@ a Terraform repository gets planned with OpenTofu — quietly, since Terragrunt
 runs whatever `TG_TF_PATH` says. Do not reintroduce a hardcoded default here;
 the fallback to OpenTofu applies only when nothing is pinned anywhere.
 
+`runner.LockedTool` is the fallback before that: unitDir-only (never walks
+up — a lock file is never inherited), reading whether `.terraform.lock.hcl`'s
+header says `"tofu init"` or `"terraform init"`. Checked *after* PinnedTool in
+both `Detect` and `TerragruntTF`, deliberately — an explicit pin is cheaper
+and is the repository's stated intent, which should win over a lock file that
+might just be stale mid-migration.
+
 ### The base ref is resolved, never assumed
 
 `detect.ResolveBaseRef` tries `--base-ref`, then
@@ -193,6 +207,85 @@ case mise's safe mode exists for.
 
 `runner.miseEnv` sets `MISE_SAFE=1`, and the image sets it too. Do not remove
 either, and do not add a flag to turn it off.
+
+### The deployment method wish is not config
+
+`--deployment-method-wish` / `BLASTDOOR_DEPLOYMENT_METHOD_WISH` is not readable
+from `.blastdoor.yml` — an `environments:` key there rejects the whole file,
+via the same `KnownFields(true)` decoder that keeps out anything else the
+config doesn't name. Same reasoning as the approver group ids: a branch
+declaring `prd=auto` is a branch arranging its own unattended production apply,
+so the pipeline states the wish and the pipeline's statement is the only one.
+Do not add an `environments:` field to the config struct to make this more
+convenient; that is the bypass, not a feature.
+
+### Auto is a floor from policy, the wish is a ceiling on top of it — and the wish is now optional
+
+`Decide` no longer requires a wish to do anything. It used to return
+immediately when `!w.Stated()`; now it always folds `r.Units` into
+`r.Environments`, using whatever environments `blastdoor plan --environment`
+recorded on the units themselves — `environmentNames`, not `w.Names()` — and
+bails out only when nothing recorded one at all. A wish, when stated, still
+gets the strict promise it always did (every unit's environment must be named
+by it, or `Decide` errors, and the wish's own order decides the environment
+order) — see the `w.Stated()` branch.
+
+Why the change: `BLASTDOOR_DEPLOYMENT_METHOD_WISH` is a CI/CD variable a human
+sets, and a fully automated provisioning flow (Backstage, copier, an MR merged
+by nobody in particular) has no human in the loop to set it. Auto now has to
+be able to come from somewhere that isn't a pipeline variable.
+
+That somewhere is policy. An `allow` rule can name, per environment, whether
+it is safe to automate: `{"resource": rc.address, "reason": "...",
+"deployment_method": {"int": "auto", "stg": "auto", "prd": "manual"}}`
+(`policy.Change.DeploymentMethod`, `policy.ruleMatch`,
+`policy.intersectDeploymentMethod`). Only `"auto"` and `"manual"` are valid
+values — `decodeJudgement` rejects anything else, the same way `ParseWish`
+rejects anything but `auto`/`manual` for the wish. Two things both have to
+hold before an environment goes `Auto`:
+
+- Every change in every unit in that environment is `Pass`, same as before.
+- Every one of those changes was matched by an allow rule whose
+  `deployment_method` names this specific environment `"auto"`
+  (`report.unitAutoFor`). A rule silent on an environment, or naming it
+  `"manual"`, are the same fact as far as this is concerned — either way that
+  rule did not vouch for auto there. A rule that predates this feature
+  contributes nothing at all, which is why nothing starts auto-applying just
+  because it now passes policy. `deployment_method` has to be opted into per
+  rule, deliberately.
+
+When more than one allow rule matches the same resource, their
+`deployment_method` maps are **intersected**, not unioned
+(`intersectDeploymentMethod`): every matching rule has to say `"auto"` for an
+environment, the same way one denying rule is enough to keep the whole change
+from passing. Do not change this to a union — that would let an unrelated,
+permissive rule launder automation onto a resource a stricter rule also
+matched. `Change.DeploymentMethod` after folding holds only the environments
+every matching rule agreed on, and only ever with the value `"auto"` — an
+environment is either in the map meaning auto, or absent meaning manual;
+nothing downstream needs to distinguish "named manual" from "never named".
+
+The wish, when a pipeline does state one, still narrows on top of this — it
+can turn an environment policy would otherwise automate into manual (a wish of
+`manual`), but it can never turn one policy has not vouched for into auto.
+Nothing here reverses that ceiling; it just stopped being the only thing that
+could ever produce a floor.
+
+**Do not read `deployment_method` from `.blastdoor.yml` or any other
+repository-supplied config**, for the same reason the wish itself is not
+config: unlike the wish, these rules live in the policy layer, which is
+centrally guarded and tiered (see "the most severe matching verdict wins"
+above) — that is what keeps naming an environment safe to automate a decision
+the repository being judged never gets to make for itself.
+
+### `none` is tested before `auto` in `Report.Decide`
+
+An environment with no changed units has a vacuously passing verdict — there
+is nothing in it to deny. Testing `auto` first would read that as "nothing
+here objects" and resolve every untouched environment to `auto`, generating an
+apply job that runs the repository's apply script against an empty unit list.
+`none` has to be checked first so "nothing changed" and "nothing objected" stay
+different facts.
 
 ### `--guard-path` is the only thing stopping self-approval
 

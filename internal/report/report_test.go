@@ -11,6 +11,17 @@ func change(address string, v policy.Verdict, reasons ...string) policy.Change {
 	return policy.Change{Address: address, Verdict: v, Reasons: reasons, Actions: []string{"create"}}
 }
 
+// autoChange is a Pass change whose rule vouched for the named environments —
+// the Decide tests below fold a wish and this together the way blastdoor
+// eval does, so a test wanting "auto" now has to earn it on both counts.
+func autoChange(address string, envs ...string) policy.Change {
+	method := map[string]string{}
+	for _, e := range envs {
+		method[e] = "auto"
+	}
+	return policy.Change{Address: address, Verdict: policy.Pass, Reasons: []string{"fine"}, Actions: []string{"create"}, DeploymentMethod: method}
+}
+
 // The plan takes the worst verdict anywhere in it — no arithmetic.
 func TestBuildTakesTheWorstVerdict(t *testing.T) {
 	tests := []struct {
@@ -121,7 +132,7 @@ func TestWriteEnv(t *testing.T) {
 // A denial says so plainly, and names what caused it.
 func TestWriteMarkdownForDeny(t *testing.T) {
 	rep := Build([]Unit{{Path: "terraform/prd", Changes: []policy.Change{
-		change("aws_iam_policy.admin", policy.Deny, policy.ReasonUnjudged),
+		change("aws_iam_policy.admin", policy.Deny, "never"),
 	}}})
 
 	var b strings.Builder
@@ -129,10 +140,31 @@ func TestWriteMarkdownForDeny(t *testing.T) {
 		t.Fatalf("WriteMarkdown: %v", err)
 	}
 
-	for _, want := range []string{"Denied", "aws_iam_policy.admin", "terraform/prd", "no policy at all", "Approving does not clear this"} {
+	for _, want := range []string{"Denied", "aws_iam_policy.admin", "terraform/prd", "Approving does not clear this"} {
 		if !strings.Contains(b.String(), want) {
 			t.Errorf("summary is missing %q:\n%s", want, b.String())
 		}
+	}
+}
+
+// A change no policy judged is sent to review, not denied, and says so.
+func TestWriteMarkdownForUnjudged(t *testing.T) {
+	rep := Build([]Unit{{Path: "terraform/prd", Changes: []policy.Change{
+		change("aws_iam_policy.admin", policy.Review, policy.ReasonUnjudged),
+	}}})
+
+	var b strings.Builder
+	if err := rep.WriteMarkdown(&b); err != nil {
+		t.Fatalf("WriteMarkdown: %v", err)
+	}
+
+	for _, want := range []string{"Review required", "aws_iam_policy.admin", "terraform/prd", "no policy at all"} {
+		if !strings.Contains(b.String(), want) {
+			t.Errorf("summary is missing %q:\n%s", want, b.String())
+		}
+	}
+	if strings.Contains(b.String(), "Denied") {
+		t.Errorf("unjudged change read as denied:\n%s", b.String())
 	}
 }
 
@@ -176,5 +208,80 @@ func TestWriteMarkdownEscapesPipes(t *testing.T) {
 	}
 	if !strings.Contains(b.String(), `a \| b`) {
 		t.Errorf("pipe was not escaped:\n%s", b.String())
+	}
+}
+
+// decided builds a report that has already been through Decide.
+func decided(t *testing.T, wish string, units []Unit) Report {
+	t.Helper()
+	rep := Build(units)
+	w, err := ParseWish(wish)
+	if err != nil {
+		t.Fatalf("ParseWish: %v", err)
+	}
+	if err := rep.Decide(w); err != nil {
+		t.Fatalf("Decide: %v", err)
+	}
+	return rep
+}
+
+func TestWriteEnvCarriesTheDeploymentMethods(t *testing.T) {
+	rep := decided(t, "int=auto,stg=auto,prd=manual", []Unit{
+		{Path: "ops/int/a", Environment: "int", Changes: []policy.Change{autoChange("x", "int")}},
+		{Path: "ops/stg/a", Environment: "stg", Changes: []policy.Change{change("y", policy.Review, "look")}},
+	})
+
+	var b strings.Builder
+	if err := rep.WriteEnv(&b); err != nil {
+		t.Fatalf("WriteEnv: %v", err)
+	}
+	got := b.String()
+
+	for _, want := range []string{
+		"BLASTDOOR_DEPLOY_INT=auto\n",
+		"BLASTDOOR_DEPLOY_STG=manual\n",
+		"BLASTDOOR_DEPLOY_PRD=none\n",
+		"BLASTDOOR_VERDICT=review\n",
+	} {
+		if !strings.Contains(got, want) {
+			t.Errorf("WriteEnv missing %q, got:\n%s", want, got)
+		}
+	}
+}
+
+// No wish, no new keys: an existing pipeline sees exactly what it saw before.
+func TestWriteEnvUnchangedWithoutAWish(t *testing.T) {
+	rep := Build([]Unit{{Path: "a", Changes: []policy.Change{change("x", policy.Pass, "fine")}}})
+
+	var b strings.Builder
+	if err := rep.WriteEnv(&b); err != nil {
+		t.Fatalf("WriteEnv: %v", err)
+	}
+	if strings.Contains(b.String(), "BLASTDOOR_DEPLOY_") {
+		t.Errorf("WriteEnv wrote a deployment key with no wish stated:\n%s", b.String())
+	}
+}
+
+func TestWriteMarkdownShowsTheEnvironmentTable(t *testing.T) {
+	rep := decided(t, "int=auto,prd=manual", []Unit{
+		{Path: "ops/int/a", Environment: "int", Changes: []policy.Change{autoChange("x", "int")}},
+	})
+
+	var b strings.Builder
+	if err := rep.WriteMarkdown(&b); err != nil {
+		t.Fatalf("WriteMarkdown: %v", err)
+	}
+	got := b.String()
+
+	for _, want := range []string{"| Environment | Apply | Why |", "✅ auto", "— none"} {
+		if !strings.Contains(got, want) {
+			t.Errorf("WriteMarkdown missing %q, got:\n%s", want, got)
+		}
+	}
+
+	// Below the verdict table: a reviewer reads what changed before reading
+	// what approving it will cause.
+	if strings.Index(got, "| Environment |") < strings.Index(got, "| Verdict |") {
+		t.Error("the environment table must come after the verdict table")
 	}
 }

@@ -2,8 +2,8 @@
 #
 # Every rule answers one question about one change — is this fine, does a
 # person need to look, or is it not allowed? Add the change to `allow`,
-# `review` or `deny` with a reason. A change no rule matches is denied, so
-# there is nothing extra to write to make that happen.
+# `review` or `deny` with a reason. A change no rule matches is sent to
+# review, so there is nothing extra to write to make that happen.
 package blastdoor
 
 # --- topics ---------------------------------------------------------------
