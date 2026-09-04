@@ -65,16 +65,16 @@ func verdictFor(t *testing.T, res Result, address string) Change {
 	return Change{}
 }
 
-// The core promise: no rule, no entry.
-func TestUnjudgedChangeIsDenied(t *testing.T) {
+// The core promise: no rule, no pass — but not a hard block either.
+func TestUnjudgedChangeIsSentToReview(t *testing.T) {
 	res := judge(t, "", planDoc(change("aws_iam_policy.admin", "aws_iam_policy", "create")))
 
-	if res.Verdict != Deny {
-		t.Errorf("verdict = %q, want %q", res.Verdict, Deny)
+	if res.Verdict != Review {
+		t.Errorf("verdict = %q, want %q", res.Verdict, Review)
 	}
 	c := verdictFor(t, res, "aws_iam_policy.admin")
-	if c.Verdict != Deny {
-		t.Errorf("change verdict = %q, want %q", c.Verdict, Deny)
+	if c.Verdict != Review {
+		t.Errorf("change verdict = %q, want %q", c.Verdict, Review)
 	}
 	if len(c.Reasons) != 1 || c.Reasons[0] != ReasonUnjudged {
 		t.Errorf("reasons = %v, want [%q]", c.Reasons, ReasonUnjudged)
@@ -84,15 +84,15 @@ func TestUnjudgedChangeIsDenied(t *testing.T) {
 	}
 }
 
-// Every action shape needs a rule; none of them slips through unjudged.
+// Every action shape needs a rule; none of them slips through as a pass.
 func TestEveryActionNeedsARule(t *testing.T) {
 	for _, actions := range [][]string{
 		{"create"}, {"update"}, {"delete"},
 		{"create", "delete"}, {"delete", "create"}, {"read"},
 	} {
 		res := judge(t, "", planDoc(change("x.y", "x", actions...)))
-		if res.Verdict != Deny {
-			t.Errorf("actions %v: verdict = %q, want %q", actions, res.Verdict, Deny)
+		if res.Verdict != Review {
+			t.Errorf("actions %v: verdict = %q, want %q", actions, res.Verdict, Review)
 		}
 	}
 }
@@ -218,8 +218,8 @@ allow contains {"resource": rc.address, "reason": "creating is fine"} if {
 	if verdictFor(t, res, "x.created").Verdict != Pass {
 		t.Error("the create should pass")
 	}
-	if got := verdictFor(t, res, "x.deleted").Verdict; got != Deny {
-		t.Errorf("the delete verdict = %q, want %q — it was never judged", got, Deny)
+	if got := verdictFor(t, res, "x.deleted").Verdict; got != Review {
+		t.Errorf("the delete verdict = %q, want %q — it was never judged", got, Review)
 	}
 }
 

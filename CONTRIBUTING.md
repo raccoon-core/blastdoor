@@ -51,9 +51,10 @@ one.
 
 Two invariants carry the whole tool, and both live in `internal/policy`:
 
-- **A change no rule matches is denied.** `Evaluate` decides that from the plan
-  itself, not from a policy rule that has to fire — a rule that does not run
-  must not be the difference between judged and waved through.
+- **A change no rule matches is sent to review, never passed.** `Evaluate`
+  decides that from the plan itself, not from a policy rule that has to
+  fire — a rule that does not run must not be the difference between judged
+  and waved through unattended.
 - **The most severe matching verdict wins** (`Worse`). This is what makes rules
   safe to add: a new one can only ever tighten the outcome, so nobody weakens
   the gate by contributing.

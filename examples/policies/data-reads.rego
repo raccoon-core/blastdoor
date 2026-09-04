@@ -1,9 +1,9 @@
 # Allowing, in its simplest form.
 #
 # Reading a data source changes no infrastructure, but blastdoor cannot know
-# that — a change no rule matches is denied. Most real modules read something
-# (Vault, remote state, an AMI lookup), so without a rule like this every plan
-# is denied and the gate stops meaning anything.
+# that — a change no rule matches is sent to review. Most real modules read
+# something (Vault, remote state, an AMI lookup), so without a rule like this
+# every plan needs a person to look and the gate stops meaning anything.
 package blastdoor
 
 allow contains {"resource": rc.address, "reason": "reading a data source changes no infrastructure"} if {

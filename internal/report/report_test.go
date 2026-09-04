@@ -132,7 +132,7 @@ func TestWriteEnv(t *testing.T) {
 // A denial says so plainly, and names what caused it.
 func TestWriteMarkdownForDeny(t *testing.T) {
 	rep := Build([]Unit{{Path: "terraform/prd", Changes: []policy.Change{
-		change("aws_iam_policy.admin", policy.Deny, policy.ReasonUnjudged),
+		change("aws_iam_policy.admin", policy.Deny, "never"),
 	}}})
 
 	var b strings.Builder
@@ -140,10 +140,31 @@ func TestWriteMarkdownForDeny(t *testing.T) {
 		t.Fatalf("WriteMarkdown: %v", err)
 	}
 
-	for _, want := range []string{"Denied", "aws_iam_policy.admin", "terraform/prd", "no policy at all", "Approving does not clear this"} {
+	for _, want := range []string{"Denied", "aws_iam_policy.admin", "terraform/prd", "Approving does not clear this"} {
 		if !strings.Contains(b.String(), want) {
 			t.Errorf("summary is missing %q:\n%s", want, b.String())
 		}
+	}
+}
+
+// A change no policy judged is sent to review, not denied, and says so.
+func TestWriteMarkdownForUnjudged(t *testing.T) {
+	rep := Build([]Unit{{Path: "terraform/prd", Changes: []policy.Change{
+		change("aws_iam_policy.admin", policy.Review, policy.ReasonUnjudged),
+	}}})
+
+	var b strings.Builder
+	if err := rep.WriteMarkdown(&b); err != nil {
+		t.Fatalf("WriteMarkdown: %v", err)
+	}
+
+	for _, want := range []string{"Review required", "aws_iam_policy.admin", "terraform/prd", "no policy at all"} {
+		if !strings.Contains(b.String(), want) {
+			t.Errorf("summary is missing %q:\n%s", want, b.String())
+		}
+	}
+	if strings.Contains(b.String(), "Denied") {
+		t.Errorf("unjudged change read as denied:\n%s", b.String())
 	}
 }
 

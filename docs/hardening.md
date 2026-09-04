@@ -8,12 +8,14 @@ Read this before relying on the gate for anything that matters.
 
 ## What blastdoor enforces itself
 
-- A change no rule matches is **denied**, decided by blastdoor from the plan
-  itself rather than by a policy rule that has to fire.
+- A change no rule matches is **sent to review**, decided by blastdoor from
+  the plan itself rather than by a policy rule that has to fire. It can still
+  never pass or auto-apply unattended, but it does not fail the job on its
+  own — a person has to approve it, same as an explicit `review` rule.
 - Within a layer, verdicts never weaken by addition: when several rules match
   one change the most severe wins, so **deleting** a rule makes a change *worse*
-  (denied, for want of a rule), never better. Across layers this is deliberately
-  not true — see below.
+  (needing review, for want of a rule), never better. Across layers this is
+  deliberately not true — see below.
 - A `deny` also fails the job, so approving alone does not clear it.
 - A document that is not plan JSON is an error, never a plan with nothing to judge.
 - `blastdoor plan` wipes its output directory first, so a `plan.json` committed

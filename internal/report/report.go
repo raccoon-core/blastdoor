@@ -376,12 +376,7 @@ func (r Report) headline() string {
 func (r Report) verdictSentence(pass, review, deny int) string {
 	switch r.Verdict {
 	case policy.Deny:
-		unjudged := r.unjudgedCount()
-		line := fmt.Sprintf("**Denied** — %d change(s) a policy does not allow.", deny)
-		if unjudged > 0 {
-			line += fmt.Sprintf(" %d of those have no policy at all; write a rule for them, or drop them from this change.", unjudged)
-		}
-		return line + " Approving does not clear this.\n"
+		return fmt.Sprintf("**Denied** — %d change(s) a policy does not allow. Approving does not clear this.\n", deny)
 	case policy.Review:
 		// A review can be forced by paths rather than by scored changes —
 		// a guarded file, or one no plan covers. Counting changes then
@@ -391,7 +386,11 @@ func (r Report) verdictSentence(pass, review, deny int) string {
 		if review == 0 && pass == 0 && deny == 0 {
 			return "**Review required** — a person has to look at this change. Nothing in it was scored.\n"
 		}
-		return fmt.Sprintf("**Review required** — %d change(s) need a person to approve, %d passed.\n", review, pass)
+		line := fmt.Sprintf("**Review required** — %d change(s) need a person to approve, %d passed.", review, pass)
+		if unjudged := r.unjudgedCount(); unjudged > 0 {
+			line += fmt.Sprintf(" %d of those have no policy at all; write a rule for them, or drop them from this change.", unjudged)
+		}
+		return line + "\n"
 	default:
 		return fmt.Sprintf("**Pass** — every one of the %d change(s) is allowed by policy.\n", pass)
 	}

@@ -126,8 +126,8 @@ deny contains {"resource": rc.address, "reason": "company: not this one"} if {
 	}
 }
 
-// A change no layer judged is still denied, and Go still decides that.
-func TestUnjudgedByEveryLayerIsDenied(t *testing.T) {
+// A change no layer judged still needs a person, and Go still decides that.
+func TestUnjudgedByEveryLayerIsSentToReview(t *testing.T) {
 	topicsOnly := `package blastdoor
 allow contains {"resource": rc.address, "reason": "topics only"} if {
 	some rc in input.resource_changes
@@ -139,8 +139,8 @@ allow contains {"resource": rc.address, "reason": "topics only"} if {
 		layerOf(t, "local", 99, topicsOnly),
 	)
 
-	if got.Verdict != Deny {
-		t.Errorf("verdict = %s, want %s", got.Verdict, Deny)
+	if got.Verdict != Review {
+		t.Errorf("verdict = %s, want %s", got.Verdict, Review)
 	}
 	if got.Reasons[0] != ReasonUnjudged {
 		t.Errorf("reasons = %v, want %q", got.Reasons, ReasonUnjudged)

@@ -29,7 +29,8 @@ that way. If you add behaviour, add a test that would fail without it.
 Every resource change in a plan gets one verdict: `pass`, `review` or `deny`.
 Policies are Rego in `package blastdoor` contributing to `allow`, `review` and
 `deny` rule sets, each entry an object with `resource` and `reason`. The worst
-verdict of any change decides the plan. A change no rule matches is denied.
+verdict of any change decides the plan. A change no rule matches is sent to
+review — silence is not consent, but it does not hard-block either.
 
 ## Load-bearing decisions, do not quietly undo
 
@@ -44,11 +45,17 @@ threshold was a magic number, and three unrelated changes could add past it.
 **Do not reintroduce scores, weights or thresholds.** If a change seems to need
 one, the real question is which of the three verdicts it deserves.
 
-### A change no rule matches is denied, and Go decides that
+### A change no rule matches is sent to review, and Go decides that
 
 `policy.Evaluate` computes the unmatched set from the plan itself. It is
 deliberately *not* a Rego rule, because a rule that fails to fire — or that
-someone disables — must not be the difference between judged and waved through.
+someone disables — must not be the difference between judged and waved
+through unattended. It used to deny outright (2026-09-04: changed to review)
+— an unjudged change still cannot pass and still cannot auto-apply
+(`DeploymentMethod` is only ever set on `Pass`, see `internal/report`'s
+`Decide`), but it no longer hard-fails the pipeline on its own; it needs a
+person's approval, the same as an explicit `review` rule. A change an
+explicit `deny` rule matches is unaffected — that still hard-blocks.
 
 Keep that computation in Go. There is no "default policy" file any more, and
 adding one back would move the tool's central guarantee into something a

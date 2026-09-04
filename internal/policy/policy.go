@@ -29,9 +29,11 @@ type Verdict string
 const (
 	// Pass means a policy looked at the change and is content with it.
 	Pass Verdict = "pass"
-	// Review means a policy wants a person to approve it.
+	// Review means a policy wants a person to approve it, or no policy
+	// judged it at all — silence is not consent, but it is not an outright
+	// block either: it needs a person, the same as an explicit review rule.
 	Review Verdict = "review"
-	// Deny means a policy forbids it, or no policy judged it at all.
+	// Deny means a policy forbids it.
 	// Approving does not clear a Deny — the plan or the policy has to change.
 	Deny Verdict = "deny"
 )
@@ -64,7 +66,8 @@ var Queries = map[Verdict]string{
 	Deny:   "data.blastdoor.deny",
 }
 
-// ReasonUnjudged is given to a change no policy matched.
+// ReasonUnjudged is given to a change no policy matched. Such a change is
+// sent to Review, never waved through as Pass — see Evaluate.
 const ReasonUnjudged = "no policy judges this change"
 
 // Change is one resource change and what the policies made of it.
@@ -245,7 +248,7 @@ func New(ctx context.Context, opts Options) (*Evaluator, error) {
 	if len(layers) == 0 {
 		if len(opts.PolicyPaths) == 0 {
 			// No policies at all: every change is unjudged, which Evaluate
-			// denies on its own.
+			// sends to review on its own.
 			return &Evaluator{}, nil
 		}
 		layers = []Layer{{Name: "policy", Paths: opts.PolicyPaths}}
@@ -384,10 +387,10 @@ func prepare(ctx context.Context, store storage.Store, args []func(*rego.Rego)) 
 
 // Evaluate judges every real change in a plan.
 //
-// A change matched by no rule is denied. That is decided here, from the plan
-// itself, rather than by a policy rule that has to fire — a rule that does not
-// run must not be the difference between a change being judged and being waved
-// through.
+// A change matched by no rule is sent to review, never passed. That is
+// decided here, from the plan itself, rather than by a policy rule that has
+// to fire — a rule that does not run must not be the difference between a
+// change being judged and being waved through unattended.
 //
 // With more than one layer, the highest-weight layer that judged a change at
 // all decides it, and the layers below are recorded but do not contribute.
@@ -419,7 +422,7 @@ func (e *Evaluator) Evaluate(ctx context.Context, plan any) (Result, error) {
 			Address: address,
 			Type:    stringField(rc, "type"),
 			Actions: actions(rc),
-			Verdict: Deny,
+			Verdict: Review,
 		}
 
 		decided := false

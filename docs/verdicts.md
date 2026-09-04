@@ -3,8 +3,8 @@
 | Verdict | Meaning | What the gate does |
 |---|---|---|
 | `pass` | A rule allows it | Approves, and with `--auto-merge` queues the merge |
-| `review` | A rule wants a person | Posts the summary, and with `--approval-rule` requires a human approval |
-| `deny` | A rule forbids it, or no rule matched it | The same **and** fails the job, so the pipeline is red |
+| `review` | A rule wants a person, or no rule matched it | Posts the summary, and with `--approval-rule` requires a human approval |
+| `deny` | A rule forbids it | The same **and** fails the job, so the pipeline is red |
 
 The approval rule is opt-in, because it writes to the merge request. Without
 `--approval-rule` the gate still posts the summary, still fails the job on a
@@ -19,12 +19,12 @@ forbids is not offset by nine it allows.
 person, and approving answers it. A denial is not — it says this should not
 happen, so clearing it means changing the plan or changing the policy.
 
-## Denied by default
+## Sent to review by default
 
 | | |
 |---|---|
-| A change no rule matches | `deny`, reason "no policy judges this change" |
-| A type with rules, in a shape none of them match | `deny` |
+| A change no rule matches | `review`, reason "no policy judges this change" |
+| A type with rules, in a shape none of them match | `review` |
 | A judgement with no `resource` or no `reason` | an error — it cannot be attached or explained |
 | Anything that isn't plan JSON | an error, never an empty plan that passes |
 | A run with no units at all | the gate abstains — no approval, no merge |
