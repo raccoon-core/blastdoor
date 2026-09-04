@@ -258,9 +258,9 @@ func TestWriteMarkdownShowsTheEnvironmentTable(t *testing.T) {
 		}
 	}
 
-	// Above the verdict table: a reviewer decides whether to approve knowing
-	// what approving will cause.
-	if strings.Index(got, "| Environment |") > strings.Index(got, "| Verdict |") {
-		t.Error("the environment table must come before the verdict table")
+	// Below the verdict table: a reviewer reads what changed before reading
+	// what approving it will cause.
+	if strings.Index(got, "| Environment |") < strings.Index(got, "| Verdict |") {
+		t.Error("the environment table must come after the verdict table")
 	}
 }

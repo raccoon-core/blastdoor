@@ -293,9 +293,9 @@ func (r Report) verdictTable() string {
 
 // deploymentTable says what the apply will do, per environment.
 //
-// Above the verdict table deliberately. "What does this change contain" and
-// "what will approving it cause" are different questions, and the second is the
-// one a reviewer is answering when they click approve.
+// Below the verdict table deliberately. "What does this change contain" and
+// "what will approving it cause" are different questions, and a reviewer
+// reads the first before the second.
 func (r Report) deploymentTable() string {
 	if len(r.Environments) == 0 {
 		return ""
