@@ -90,15 +90,25 @@ binding constraint.
 `blastdoor plan` gains `--baseline-ref`. Empty is the off switch: no worktree, no
 sidecars, no behaviour change for existing consumers.
 
-When set, after a unit's `plan.json` is written:
+When set, the worktree is created once, eagerly, before any unit is planned —
+not lazily on the first unit whose head plan turns out to have applicable
+changes. Then, after each unit's `plan.json` is written:
 
 1. If that plan has no applicable changes, skip the unit. Nothing to ride along
-   with, and this is where most of the cost is avoided.
-2. Otherwise create — once per run, reused across units — a `git worktree` at the
-   baseline ref, and plan `<worktree>/<unit>` with the same `runner.Options`.
+   with, and this is where most of the per-unit cost is avoided.
+2. Otherwise plan `<worktree>/<unit>` with the same `runner.Options`, against
+   the worktree already checked out.
 3. Write `<out-dir>/<unit>/baseline.json`.
 
 The worktree is removed when the run ends.
+
+Eager, not lazy, on purpose: an unresolvable ref is the shallow-clone
+misconfiguration `NewWorktree` already guards against (see "Failing closed"),
+and it should fail the run before any unit is planned, not after the first one
+that happens to have changes. The trade-off is real and accepted: a change
+whose every unit applies nothing now still pays for a worktree checkout on a
+shallow clone where, planned lazily, it would never have needed one. Fast,
+loud failure on a real misconfiguration was judged worth that cost.
 
 Planning in the same job as the head plan, rather than a parallel
 `blastdoor:baseline` job, is deliberate on two counts: that job already holds the
@@ -166,6 +176,13 @@ pending change is a managed-resource read skip its baseline entirely. Reads on
 data sources are inapplicable; everything else is applicable, including anything
 unrecognised. Fail closed.
 
+Fail closed also covers the shape of `actions` itself, not just its value: a
+missing `change.actions`, an empty array, or one whose only entries are not
+strings, is not either of the two named inapplicable shapes — both require
+exactly one recognised action — so it reads as applicable, the same as an
+unrecognised action does. A malformed `actions` must never read as "nothing to
+do here."
+
 Without the `no-op` clause a resource with a perpetual diff would deny every
 merge request forever.
 
@@ -183,14 +200,22 @@ verdict via `policy.Worse`, never soften. It worsens to `policy.Deny` where thos
 two worsen to `policy.Review`. The units land on a new `Report.Baseline` field so
 `report.json` carries the whole story.
 
-Two consequences arrive without new code, and both are the point:
+One consequence arrives without new code:
 
 - `gate` already exits non-zero on `Deny`, and already calls `Unapprove` before
   raising the gate — so an approval earned by an earlier, green push is withdrawn
   rather than carried over onto a pipeline that now denies.
-- `Decide` only ever sets `DeploymentMethod` on `Pass`. A baseline deny therefore
-  cannot auto-apply anything, which is the failure this whole design exists to
-  prevent.
+
+Stopping the auto-apply is not free, though, and needs its own line of code.
+`RequireCleanBaseline` sets `r.Verdict` and `r.Baseline`; it does not touch any
+`Unit.Verdict`. `Decide` computes each environment's method from a rollup of
+*per-unit* verdicts, plus a `wide` slice of repository-wide facts it cannot get
+from that rollup — `Guarded` and `Uncovered` are named there today. Without
+`Baseline` named alongside them, a dirty baseline is invisible to `Decide`
+entirely, and an environment whose units all pass an auto-vouching rule
+resolves to `Auto` on a report whose own verdict is `Deny`. So `Decide` must
+add `Baseline` to `wide` — this is not a side effect of anything already
+written, it is a required line in this design.
 
 ### Failing closed
 
@@ -282,11 +307,22 @@ plan fixture there, and adding one would only assert what the policies say about
 its contents. The predicate above is tested in `internal/policy`, and the deny in
 `internal/report`.
 
-## Open question
+## Decided during implementation: no refusal when `--baseline-ref` resolves to `HEAD`
 
-Whether `blastdoor plan` should refuse `--baseline-ref` when it resolves to the
-same commit as `HEAD`, the way `ChangedFiles` refuses a base ref equal to head.
-It is the same class of misconfiguration — a baseline that is trivially clean,
-gating nothing while looking green — but on the default branch it is the normal
-state rather than a mistake, so the check would have to know which it is looking
-at. Decide during implementation.
+Considered: whether `blastdoor plan` should refuse `--baseline-ref` when it
+resolves to the same commit as `HEAD`, the way `ChangedFiles` refuses a base
+ref equal to head. It is the same class of misconfiguration — a baseline that
+is trivially clean, gating nothing while looking green — but on the default
+branch it is the normal state rather than a mistake, so the check would have
+to know which it is looking at.
+
+Decided against a check in the binary. It stays a template-level concern: the
+binary does not compare the resolved commit to `HEAD` at all, and
+`ci/gitlab/blastdoor.yml`'s `blastdoor:plan` job avoids the case structurally,
+with its `elif` guarding `--baseline-ref` behind "not on the default branch" —
+on the default branch, `baseline_arg` is never set, so `--baseline-ref` is
+never passed resolving to `HEAD` in the first place. A binary-level refusal
+would have to rediscover which branch it is on to tell the mistake from the
+normal case, duplicating a distinction the template already draws for free.
+Revisit only if a consumer drives `blastdoor plan --baseline-ref` directly,
+outside the template's guard.

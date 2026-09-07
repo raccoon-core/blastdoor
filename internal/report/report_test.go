@@ -380,6 +380,15 @@ func TestMarkdownSaysWhenABaselineIsMissing(t *testing.T) {
 	if !strings.Contains(b.String(), "no baseline") {
 		t.Errorf("summary does not say the baseline is missing:\n%s", b.String())
 	}
+	// The Missing branch's own continue is what stops this. Without it,
+	// execution falls through into the dirty-baseline line below, which
+	// prints an empty address list against an empty commit — "(at ``)" — off
+	// a BaselineUnit that never carried either. "no baseline" alone still
+	// passes if that continue is ever dropped, since it comes from the line
+	// above the fallthrough would append to, not replace.
+	if strings.Contains(b.String(), "(at ``)") {
+		t.Errorf("summary renders the dirty-baseline line for a missing baseline too:\n%s", b.String())
+	}
 }
 
 func TestDenyHeadlineWithNoDeniedChanges(t *testing.T) {

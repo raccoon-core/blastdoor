@@ -72,6 +72,17 @@ variables:
   # permanently dirty unit needs that lever without reverting a template bump.
   #
   # Costs a second plan per unit that has changes, in the same job.
+  #
+  # blastdoor:eval below passes --require-clean-baseline whenever this is
+  # non-empty, whether or not blastdoor:plan actually wrote the sidecars it
+  # reads — a project running int/stg/prd as separate legs (see docs/gitlab.md,
+  # "Stating a wish...") overrides blastdoor:plan wholesale with its own
+  # parallel:matrix job, whose script: does not carry this file's baseline_arg
+  # block. On the next template bump such a project denies every merge
+  # request: no sidecar reads as a unit with an unknown, and therefore dirty,
+  # baseline. A project overriding blastdoor:plan must add --baseline-ref to
+  # its own script (see the baseline_arg block below for how), or set this to
+  # "" until it does.
   BLASTDOOR_BASELINE_ENABLED: "true"
   # Where remote policy layers are checked out, when .blastdoor.yml names any.
   # Under the workspace so this job can cache it; add it to .gitignore.

@@ -169,8 +169,14 @@ or --plan-dir at the tree 'blastdoor plan' produced, to judge a whole change.`,
 			// Before Decide, like the guards above: an environment cannot apply
 			// unattended while its target branch has changes nobody reviewed in
 			// a diff, and Decide can only see that once this has recorded it.
-			// Decide only ever sets a deployment method on Pass, so this deny is
-			// what stops the auto-apply.
+			// What actually stops the auto-apply is that Decide folds
+			// repository-wide facts named in its own "wide" slice alongside the
+			// per-unit rollup, and RequireCleanBaseline's dirty units are one of
+			// them — not, as it might look, that Decide only ever sets a method
+			// on a Pass verdict. RequireCleanBaseline sets r.Verdict and
+			// r.Baseline but never touches a Unit.Verdict, so without that entry
+			// in "wide" a baseline deny would be invisible to the per-unit fold
+			// and an environment could still resolve to Auto.
 			if requireCleanBaseline {
 				dirty, err := dirtyBaselines(plans)
 				if err != nil {

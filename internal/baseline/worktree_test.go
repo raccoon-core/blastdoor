@@ -97,6 +97,41 @@ func TestWorktreeUnitDirReportsAbsentUnits(t *testing.T) {
 	}
 }
 
+// The failure this guards: git worktree add always checks out the whole
+// repository at its top level, but a unit string is resolved relative to
+// repoDir (the caller's cwd), not to that top level. Run from a subdirectory
+// and, without correcting for the difference, UnitDir joins a unit meant to
+// be read relative to "units" onto a tree rooted one level higher, misses
+// every time, and every unit records State: absent — gating nothing while
+// every artifact still looks green, the same failure AGENTS.md calls out for
+// ResolveBaseRef.
+func TestWorktreeUnitDirCorrectsForANonRootRepoDir(t *testing.T) {
+	repoDir, _ := repoWithBaselineAndHead(t)
+	subDir := filepath.Join(repoDir, "units")
+
+	wt, err := NewWorktree(context.Background(), subDir, "main")
+	if err != nil {
+		t.Fatalf("NewWorktree: %v", err)
+	}
+	defer wt.Close()
+
+	// "old" the way a caller cwd'd into units/ would name it — not
+	// "units/old", the name it has from the repository top level.
+	dir, ok := wt.UnitDir("old")
+	if !ok {
+		t.Fatal("units/old exists on main but UnitDir says it does not, from a non-root repoDir")
+	}
+	if _, err := os.Stat(filepath.Join(dir, "main.tf")); err != nil {
+		t.Errorf("UnitDir(%q) = %q, which does not hold units/old's content: %v", "old", dir, err)
+	}
+
+	// "new" only exists on the feature branch, so it must still read as
+	// absent rather than resolving to some other, wrong directory.
+	if _, ok := wt.UnitDir("new"); ok {
+		t.Error("units/new exists only on the feature branch but UnitDir found it, from a non-root repoDir")
+	}
+}
+
 func TestWorktreeCloseRemovesTheCheckout(t *testing.T) {
 	repoDir, _ := repoWithBaselineAndHead(t)
 
@@ -132,6 +167,10 @@ func TestWorktreeCloseRemovesTheCheckout(t *testing.T) {
 }
 
 func TestWorktreeAddFailureLeavesNoTempDir(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("root bypasses permission bits")
+	}
+
 	repoDir, _ := repoWithBaselineAndHead(t)
 
 	// Make the ref resolve but the checkout itself fail: strip write

@@ -496,6 +496,35 @@ func TestApplicableAddresses(t *testing.T) {
 			plan: `{"format_version":"1.2","resource_changes":[]}`,
 			want: nil,
 		},
+		{
+			// isApplicable's doc comment: everything but the two named
+			// inapplicable shapes is applicable. A malformed actions array is
+			// neither of those two shapes, so fail closed rather than reading
+			// it as "nothing to do".
+			name: "an empty actions array applies something",
+			plan: `{"format_version":"1.2","resource_changes":[
+				{"address":"kafka_topic.a","mode":"managed","type":"kafka_topic",
+				 "change":{"actions":[]}}]}`,
+			want: []string{"kafka_topic.a"},
+		},
+		{
+			name: "a missing change.actions applies something",
+			plan: `{"format_version":"1.2","resource_changes":[
+				{"address":"kafka_topic.a","mode":"managed","type":"kafka_topic",
+				 "change":{}}]}`,
+			want: []string{"kafka_topic.a"},
+		},
+		{
+			// actions() drops non-string elements, so a single non-string
+			// entry collapses the array to zero recognised actions — the same
+			// shape as a missing or empty array, and it must fail closed the
+			// same way.
+			name: "a non-string action applies something",
+			plan: `{"format_version":"1.2","resource_changes":[
+				{"address":"kafka_topic.a","mode":"managed","type":"kafka_topic",
+				 "change":{"actions":[42]}}]}`,
+			want: []string{"kafka_topic.a"},
+		},
 	}
 
 	for _, tt := range tests {

@@ -21,6 +21,10 @@ type Worktree struct {
 	dir     string
 	ref     string
 	commit  string
+	// prefix is repoDir's path from the repository top level, as
+	// "git rev-parse --show-prefix" gives it: empty at the top level, else a
+	// slash-terminated relative path. See UnitDir.
+	prefix string
 }
 
 // NewWorktree resolves ref to a commit and checks it out, detached.
@@ -37,6 +41,21 @@ func NewWorktree(ctx context.Context, repoDir, ref string) (*Worktree, error) {
 			ref, err)
 	}
 
+	// git worktree add always checks out a full copy of the repository,
+	// rooted at its top level, regardless of repoDir. Unit strings, though,
+	// are resolved relative to repoDir (the caller's cwd when repoDir is
+	// ""). Left alone, UnitDir would join a unit meant to be read relative to
+	// repoDir onto a tree rooted one level up — or several, in a nested
+	// repository layout — and every unit would come back "not there",
+	// recording State: absent, which eval treats as clean: the check goes
+	// dark while every artifact still looks green. --show-prefix is the
+	// distance between the two roots, so recording it here lets UnitDir
+	// correct for it below.
+	prefix, err := gitOutput(ctx, repoDir, "rev-parse", "--show-prefix")
+	if err != nil {
+		return nil, fmt.Errorf("resolving the working directory's path within the repository: %w", err)
+	}
+
 	parent, err := os.MkdirTemp("", "blastdoor-baseline-")
 	if err != nil {
 		return nil, fmt.Errorf("creating a directory for the baseline checkout: %w", err)
@@ -49,7 +68,7 @@ func NewWorktree(ctx context.Context, repoDir, ref string) (*Worktree, error) {
 		return nil, fmt.Errorf("checking out %s (%.7s) as a baseline: %w", ref, commit, err)
 	}
 
-	return &Worktree{repoDir: repoDir, parent: parent, dir: dir, ref: ref, commit: commit}, nil
+	return &Worktree{repoDir: repoDir, parent: parent, dir: dir, ref: ref, commit: commit, prefix: prefix}, nil
 }
 
 // Dir is where the baseline is checked out.
@@ -66,8 +85,13 @@ func (w *Worktree) Commit() string { return w.commit }
 //
 // Not there is the ordinary case for a unit the merge request creates, so the
 // caller records Absent rather than treating it as a failure.
+//
+// unit is resolved the same way the caller resolved it against the head
+// checkout: relative to repoDir, not to the repository top level. w.prefix
+// (see NewWorktree) is what makes joining it onto w.dir, which is always
+// rooted at the top level, land in the same place.
 func (w *Worktree) UnitDir(unit string) (string, bool) {
-	dir := filepath.Join(w.dir, filepath.FromSlash(unit))
+	dir := filepath.Join(w.dir, filepath.FromSlash(w.prefix), filepath.FromSlash(unit))
 	info, err := os.Stat(dir)
 	if err != nil || !info.IsDir() {
 		return "", false

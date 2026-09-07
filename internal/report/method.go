@@ -161,15 +161,23 @@ func (r *Report) Decide(w Wish) error {
 	}
 
 	// Repository-wide, so they cannot be attributed to any one environment.
-	// Both already force review, so the verdict test below would catch them
-	// anyway; they are named separately so they survive someone later deciding
-	// that a review verdict alone should not block an unattended apply.
+	// Guarded and Uncovered already force review, so the verdict test below
+	// would catch them anyway; they are named separately so they survive
+	// someone later deciding that a review verdict alone should not block an
+	// unattended apply. Baseline has no such backstop: RequireCleanBaseline
+	// sets r.Verdict and r.Baseline but never touches a Unit.Verdict, so
+	// without an entry here a dirty baseline is invisible to the per-unit
+	// fold above and an environment can resolve to Auto on a report whose
+	// own verdict is deny.
 	var wide []string
 	if len(r.Guarded) > 0 {
 		wide = append(wide, "the change edits guarded paths")
 	}
 	if len(r.Uncovered) > 0 {
 		wide = append(wide, "the change edits files no plan covers")
+	}
+	if len(r.Baseline) > 0 {
+		wide = append(wide, "the branch this targets has changes waiting to be applied")
 	}
 
 	for _, name := range envs {

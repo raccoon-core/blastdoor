@@ -799,8 +799,14 @@ func ApplicableAddresses(raw []byte) ([]string, error) {
 // A new Terraform action must read as "something happens", not as silence.
 func isApplicable(rc map[string]any) bool {
 	acts := actions(rc)
+	// Neither inapplicable shape is reachable except through exactly one
+	// recognised string action, so a missing, empty, or non-string actions
+	// array — actions() drops anything that is not a string, which can
+	// collapse a non-empty array down to zero entries — is applicable, not
+	// exempt. Returning len(acts) > 0 here read "nothing to see" for the
+	// zero-length case instead, which is the opposite of fail closed.
 	if len(acts) != 1 {
-		return len(acts) > 0
+		return true
 	}
 	switch acts[0] {
 	case "no-op":
