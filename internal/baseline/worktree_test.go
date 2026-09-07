@@ -90,6 +90,11 @@ func TestWorktreeUnitDirReportsAbsentUnits(t *testing.T) {
 	if _, ok := wt.UnitDir("units/new"); ok {
 		t.Error("units/new exists only on the feature branch but UnitDir found it")
 	}
+	// A file, not a directory: UnitDir must not report a hit just because
+	// something exists at that path.
+	if _, ok := wt.UnitDir("units/old/main.tf"); ok {
+		t.Error("units/old/main.tf is a file but UnitDir reports it as a unit directory")
+	}
 }
 
 func TestWorktreeCloseRemovesTheCheckout(t *testing.T) {
@@ -109,6 +114,59 @@ func TestWorktreeCloseRemovesTheCheckout(t *testing.T) {
 	}
 	if _, err := os.Stat(dir); !os.IsNotExist(err) {
 		t.Errorf("worktree still on disk after Close: %v", err)
+	}
+
+	// The directory being gone isn't enough: a stale registration in the
+	// repository's own worktree list is what breaks the next run's
+	// 'worktree add' in a cached CI workspace, even after the checkout
+	// directory itself has been wiped some other way.
+	cmd := exec.Command("git", "worktree", "list", "--porcelain")
+	cmd.Dir = repoDir
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("git worktree list --porcelain: %v\n%s", err, out)
+	}
+	if strings.Contains(string(out), dir) {
+		t.Errorf("worktree %s still registered after Close:\n%s", dir, out)
+	}
+}
+
+func TestWorktreeAddFailureLeavesNoTempDir(t *testing.T) {
+	repoDir, _ := repoWithBaselineAndHead(t)
+
+	// Make the ref resolve but the checkout itself fail: strip write
+	// permission from .git so 'git worktree add' cannot create its
+	// administrative directory under .git/worktrees, while read-only
+	// commands like 'rev-parse --verify' still work.
+	gitDir := filepath.Join(repoDir, ".git")
+	if err := os.Chmod(gitDir, 0o555); err != nil {
+		t.Fatalf("chmod .git: %v", err)
+	}
+	defer func() {
+		// Restore write permission so t.TempDir()'s own cleanup can remove
+		// the repo; a read-only .git left behind would fail that cleanup
+		// for a reason unrelated to this test.
+		if err := os.Chmod(gitDir, 0o755); err != nil {
+			t.Fatalf("restoring .git permissions: %v", err)
+		}
+	}()
+
+	before, err := filepath.Glob(filepath.Join(os.TempDir(), "blastdoor-baseline-*"))
+	if err != nil {
+		t.Fatalf("glob before: %v", err)
+	}
+
+	_, err = NewWorktree(context.Background(), repoDir, "main")
+	if err == nil {
+		t.Fatal("want an error from a repo that cannot host a worktree, got nil")
+	}
+
+	after, err := filepath.Glob(filepath.Join(os.TempDir(), "blastdoor-baseline-*"))
+	if err != nil {
+		t.Fatalf("glob after: %v", err)
+	}
+	if len(after) > len(before) {
+		t.Errorf("NewWorktree leaked a temp dir on failure: before %v, after %v", before, after)
 	}
 }
 
