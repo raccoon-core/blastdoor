@@ -285,3 +285,122 @@ func TestWriteMarkdownShowsTheEnvironmentTable(t *testing.T) {
 		t.Error("the environment table must come after the verdict table")
 	}
 }
+
+func TestRequireCleanBaselineDenies(t *testing.T) {
+	rep := Build([]Unit{{
+		Path:    "terraform/prd",
+		Changes: []policy.Change{{Address: "kafka_topic.new", Verdict: policy.Pass}},
+	}})
+	if rep.Verdict != policy.Pass {
+		t.Fatalf("setup: verdict is %s, want pass", rep.Verdict)
+	}
+
+	rep.RequireCleanBaseline([]BaselineUnit{{
+		Path:      "terraform/prd",
+		Ref:       "origin/main",
+		Commit:    "2907a6899eda3dfb5a06647963bf5b5759eca6e6",
+		Addresses: []string{`kafka_topic.topics["scp.example.v1"]`},
+	}})
+
+	// Deny, not review: approving does not apply the backlog, so approving
+	// cannot be what settles it.
+	if rep.Verdict != policy.Deny {
+		t.Errorf("verdict = %s, want deny", rep.Verdict)
+	}
+	if len(rep.Baseline) != 1 {
+		t.Fatalf("Baseline has %d entries, want 1", len(rep.Baseline))
+	}
+}
+
+func TestRequireCleanBaselineWithNothingDirtyChangesNothing(t *testing.T) {
+	rep := Build([]Unit{{
+		Path:    "terraform/int",
+		Changes: []policy.Change{{Address: "kafka_topic.new", Verdict: policy.Pass}},
+	}})
+
+	rep.RequireCleanBaseline(nil)
+
+	if rep.Verdict != policy.Pass {
+		t.Errorf("verdict = %s, want pass", rep.Verdict)
+	}
+	if len(rep.Baseline) != 0 {
+		t.Errorf("Baseline has %d entries, want 0", len(rep.Baseline))
+	}
+}
+
+func TestRequireCleanBaselineNeverSoftens(t *testing.T) {
+	rep := Report{Verdict: policy.Deny}
+	rep.RequireCleanBaseline([]BaselineUnit{{Path: "terraform/prd", Missing: true}})
+	if rep.Verdict != policy.Deny {
+		t.Errorf("verdict = %s, want deny", rep.Verdict)
+	}
+}
+
+func TestMarkdownNamesTheBaselineBacklog(t *testing.T) {
+	rep := Build([]Unit{{
+		Path:    "terraform/prd",
+		Changes: []policy.Change{{Address: "kafka_topic.new", Verdict: policy.Pass}},
+	}})
+	rep.RequireCleanBaseline([]BaselineUnit{{
+		Path:      "terraform/prd",
+		Ref:       "origin/main",
+		Commit:    "2907a6899eda3dfb5a06647963bf5b5759eca6e6",
+		Addresses: []string{`kafka_topic.topics["scp.example.v1"]`},
+	}})
+
+	var b strings.Builder
+	if err := rep.WriteMarkdown(&b); err != nil {
+		t.Fatalf("WriteMarkdown: %v", err)
+	}
+	got := b.String()
+
+	for _, want := range []string{
+		"have not been applied",
+		"terraform/prd",
+		`kafka_topic.topics["scp.example.v1"]`,
+		"2907a68",
+	} {
+		if !strings.Contains(got, want) {
+			t.Errorf("summary does not mention %q:\n%s", want, got)
+		}
+	}
+}
+
+func TestMarkdownSaysWhenABaselineIsMissing(t *testing.T) {
+	rep := Build([]Unit{{
+		Path:    "terraform/prd",
+		Changes: []policy.Change{{Address: "kafka_topic.new", Verdict: policy.Pass}},
+	}})
+	rep.RequireCleanBaseline([]BaselineUnit{{Path: "terraform/prd", Missing: true}})
+
+	var b strings.Builder
+	if err := rep.WriteMarkdown(&b); err != nil {
+		t.Fatalf("WriteMarkdown: %v", err)
+	}
+	if !strings.Contains(b.String(), "no baseline") {
+		t.Errorf("summary does not say the baseline is missing:\n%s", b.String())
+	}
+}
+
+func TestDenyHeadlineWithNoDeniedChanges(t *testing.T) {
+	// The deny comes from the baseline, not from a scored change. "0 change(s)
+	// a policy does not allow" reads as nothing being wrong, directly above the
+	// list of what is wrong. Review already has this special case; deny needs
+	// its counterpart.
+	rep := Build([]Unit{{
+		Path:    "terraform/prd",
+		Changes: []policy.Change{{Address: "kafka_topic.new", Verdict: policy.Pass}},
+	}})
+	rep.RequireCleanBaseline([]BaselineUnit{{Path: "terraform/prd", Missing: true}})
+
+	var b strings.Builder
+	if err := rep.WriteMarkdown(&b); err != nil {
+		t.Fatalf("WriteMarkdown: %v", err)
+	}
+	if strings.Contains(b.String(), "0 change(s)") {
+		t.Errorf("headline claims 0 change(s):\n%s", b.String())
+	}
+	if !strings.Contains(b.String(), "Denied") {
+		t.Errorf("headline does not say Denied:\n%s", b.String())
+	}
+}
