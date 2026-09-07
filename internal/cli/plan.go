@@ -2,12 +2,15 @@ package cli
 
 import (
 	"bufio"
+	"context"
 	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
 
+	"github.com/raccoon-core/blastdoor/internal/baseline"
 	"github.com/raccoon-core/blastdoor/internal/detect"
+	"github.com/raccoon-core/blastdoor/internal/policy"
 	"github.com/raccoon-core/blastdoor/internal/runner"
 	"github.com/spf13/cobra"
 )
@@ -24,6 +27,7 @@ func newPlanCmd() *cobra.Command {
 		tgTFPath    string
 		manager     string
 		environment string
+		baselineRef string
 	)
 
 	cmd := &cobra.Command{
@@ -69,6 +73,27 @@ in each unit.`,
 				Log:              cmd.ErrOrStderr(),
 			}
 
+			// The tip of the branch this change targets, not the merge base —
+			// and this is the one place that disagrees with
+			// detect.ResolveBaseRef on purpose. Three-dot merge-base is right
+			// for "which units does this branch touch". It is wrong here: a
+			// branch that is behind its target has a merge base predating the
+			// backlog, so the baseline would come back clean while the backlog
+			// is still waiting. The question here is "what is pending if this
+			// change does not exist", and the tip is what answers it.
+			var tree *baseline.Worktree
+			if baselineRef != "" {
+				var err error
+				if tree, err = baseline.NewWorktree(cmd.Context(), "", baselineRef); err != nil {
+					return err
+				}
+				defer func() {
+					if err := tree.Close(); err != nil {
+						fmt.Fprintf(cmd.ErrOrStderr(), "%v\n", err)
+					}
+				}()
+			}
+
 			for _, unit := range resolved {
 				fmt.Fprintf(cmd.ErrOrStderr(), "\n=== planning %s ===\n", unit)
 				res, err := runner.Plan(cmd.Context(), unit, opts)
@@ -97,6 +122,19 @@ in each unit.`,
 				if err := writeEnvironmentFile(dest, environment); err != nil {
 					return err
 				}
+				if tree != nil {
+					planned, err := recordBaseline(cmd.Context(), tree, unit, res.JSON, dest,
+						func(ctx context.Context, dir string) ([]byte, error) {
+							r, err := runner.Plan(ctx, dir, opts)
+							return r.JSON, err
+						})
+					if err != nil {
+						return err
+					}
+					if planned {
+						fmt.Fprintf(cmd.ErrOrStderr(), "=== planned %s at %s ===\n", unit, tree.Ref())
+					}
+				}
 				fmt.Fprintf(cmd.OutOrStdout(), "%s\n", out)
 			}
 			return nil
@@ -113,8 +151,65 @@ in each unit.`,
 	cmd.Flags().StringVar(&tgTFPath, "terragrunt-tf-path", "auto", "binary Terragrunt wraps: auto, tofu or terraform")
 	cmd.Flags().StringVar(&manager, "manager", "auto", "version manager: auto, tenv, mise or none")
 	cmd.Flags().StringVar(&environment, "environment", "", "environment these units belong to, recorded beside each plan for 'blastdoor eval' to fold into a deployment method")
+	cmd.Flags().StringVar(&baselineRef, "baseline-ref", "",
+		"git ref to plan each changed unit against as well, to detect changes already waiting to be applied there (default: off)")
 
 	return cmd
+}
+
+// baselineTree is the part of a baseline worktree this file needs.
+//
+// An interface so the decision below can be tested without a git checkout and
+// without shelling out to terraform. baseline.Worktree satisfies it.
+type baselineTree interface {
+	Ref() string
+	Commit() string
+	UnitDir(unit string) (string, bool)
+}
+
+// planner produces plan JSON for a directory.
+type planner func(ctx context.Context, dir string) ([]byte, error)
+
+// recordBaseline plans one unit at the baseline and writes what it found
+// beside the unit's own plan. It reports whether it planned anything.
+//
+// The skip is the load-bearing part. A unit whose own plan applies nothing has
+// nothing for a backlog to ride along with, so it needs no baseline — and that
+// is also what lets a merge request which clears the backlog through, without
+// an override anybody has to be trusted with.
+func recordBaseline(ctx context.Context, tree baselineTree, unit string, headJSON []byte, dest string, plan planner) (bool, error) {
+	head, err := policy.ApplicableAddresses(headJSON)
+	if err != nil {
+		return false, fmt.Errorf("%s: %w", unit, err)
+	}
+	if len(head) == 0 {
+		return false, nil
+	}
+
+	unitDir, ok := tree.UnitDir(unit)
+	if !ok {
+		// A unit this change creates. Nothing can be pending on it.
+		return false, baseline.Write(dest, baseline.Result{
+			Ref: tree.Ref(), Commit: tree.Commit(), State: baseline.Absent,
+		})
+	}
+
+	raw, err := plan(ctx, unitDir)
+	if err != nil {
+		return true, fmt.Errorf("planning %s at %s: %w", unit, tree.Ref(), err)
+	}
+	addresses, err := policy.ApplicableAddresses(raw)
+	if err != nil {
+		return true, fmt.Errorf("%s at %s: %w", unit, tree.Ref(), err)
+	}
+
+	state := baseline.Clean
+	if len(addresses) > 0 {
+		state = baseline.Dirty
+	}
+	return true, baseline.Write(dest, baseline.Result{
+		Ref: tree.Ref(), Commit: tree.Commit(), State: state, Addresses: addresses,
+	})
 }
 
 // resolveUnits picks units from explicit flags, a file, or the git diff.
