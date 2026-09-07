@@ -149,11 +149,25 @@ Same flag name, opposite correct answer. Worth a line in AGENTS.md so nobody
 
 ### What counts as changes to be applied
 
-Resource changes whose `actions` contain anything other than `no-op` or `read`.
 One predicate, used both for "the head plan has changes" in step 1 and for
 `state: dirty` in step 3, so the two cannot disagree about what an empty plan is.
-Without it a resource with a perpetual diff would deny every merge request
-forever.
+
+A change counts as applicable unless it is exactly `["no-op"]`, or exactly
+`["read"]` on a resource whose `mode` is `data`.
+
+The `mode` clause is not decoration, and it is why this cannot be the obvious
+"anything other than `no-op` or `read`". The repository already draws this
+distinction deliberately, and tests it: `examples/plans/data-source-read.json`
+(`mode: "data"`, actions `["read"]`) passes, while
+`examples/plans/managed-resource-read-lookalike.json` — the same action on a
+*managed* resource — gets `review`, because a managed resource being read is not
+a data lookup. Filtering all `read` actions here would let a unit whose only
+pending change is a managed-resource read skip its baseline entirely. Reads on
+data sources are inapplicable; everything else is applicable, including anything
+unrecognised. Fail closed.
+
+Without the `no-op` clause a resource with a perpetual diff would deny every
+merge request forever.
 
 ## Reaching the verdict
 
@@ -257,10 +271,16 @@ of these must fail without the change:
 - Baseline ref resolves to a branch tip, not to the merge base, when the branch
   is behind the target.
 - Deny headline does not say "0 change(s)".
+- A unit whose only pending change is `["read"]` on a **managed** resource is
+  applicable, and does get a baseline; the same action on a `mode: "data"`
+  resource does not.
 
-Plus an `examples/` entry: `examples_test.go` asserts the verdict of every plan
-in `examples/plans/` and fails if one has no expected verdict, and the table in
-`examples/README.md` moves with it.
+**No `examples/` entry.** `examples_test.go` judges each plan in
+`examples/plans/` through Rego and asserts the verdict. A baseline deny is a
+report-level verdict that no policy produces, so it cannot be expressed as a
+plan fixture there, and adding one would only assert what the policies say about
+its contents. The predicate above is tested in `internal/policy`, and the deny in
+`internal/report`.
 
 ## Open question
 
