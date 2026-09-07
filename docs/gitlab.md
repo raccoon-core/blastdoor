@@ -62,6 +62,15 @@ says so and does nothing, so the earlier jobs still report on every push.
 See [ci/gitlab/blastdoor.yml](https://github.com/raccoon-core/blastdoor/blob/main/ci/gitlab/blastdoor.yml)
 for the variables.
 
+## Baseline drift
+
+`BLASTDOOR_BASELINE_ENABLED` — deny when the target branch has changes waiting
+to be applied to a unit this change touches. On by default. Set to `""` to
+turn it off, for a repository with a unit that is permanently dirty. Costs a
+second plan per changed unit, in the `blastdoor:plan` job.
+
+See [Verdicts](verdicts.md) for why this denies rather than reviews.
+
 ## The deployment method
 
 `eval` can also answer a second question, per environment: may this be applied

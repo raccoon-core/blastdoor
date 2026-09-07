@@ -39,6 +39,16 @@ A `no-op` is the only change needing no rule. These are pinned by
     Pass `--guard-path` (the GitLab template does by default) and read
     [Hardening](hardening.md) before relying on the gate.
 
+A guarded path and an uncovered file (`--require-coverage`) both force a
+verdict no policy handed down. An unapplied baseline is the third, and the
+only one that produces `deny` rather than `review`. A change merged to the
+target branch but never applied is still pending, so it appears in the plan of
+the next merge request touching that unit — and in the apply that follows its
+approval — having appeared in nobody's diff. Approving cannot settle that: only
+applying or reverting on the target branch can. Only units whose own plan
+applies something are checked, so a merge request that clears the backlog is
+not itself blocked by it.
+
 ## From verdict to deployment method
 
 A verdict says whether a change may merge. It says nothing about whether the

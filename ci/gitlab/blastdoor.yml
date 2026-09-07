@@ -62,6 +62,17 @@ variables:
   # covers is a file no policy has read. Docs and runbooks belong here; a
   # values file a unit reads does not.
   BLASTDOOR_IGNORE_PATHS: ""
+  # Deny when the branch a merge request targets still has changes waiting to
+  # be applied to a unit this change also touches. Those changes are in this
+  # merge request's plan and in the apply that follows its approval, but in
+  # nobody's diff — so a reviewer approves one thing and applies two.
+  #
+  # On by default, like BLASTDOOR_GUARD_PATHS: a template that gates is the
+  # point of the template. Set it to "" to stop the line — a repository with a
+  # permanently dirty unit needs that lever without reverting a template bump.
+  #
+  # Costs a second plan per unit that has changes, in the same job.
+  BLASTDOOR_BASELINE_ENABLED: "true"
   # Where remote policy layers are checked out, when .blastdoor.yml names any.
   # Under the workspace so this job can cache it; add it to .gitignore.
   BLASTDOOR_POLICY_CACHE: .blastdoor-policies
@@ -105,8 +116,16 @@ blastdoor:plan:
     # branch's first pipeline rather than diffing against nothing.
     - |
       base_ref_arg=""
+      baseline_arg=""
       if [ "$CI_COMMIT_BRANCH" = "$CI_DEFAULT_BRANCH" ]; then
         base_ref_arg="--base-ref $CI_COMMIT_BEFORE_SHA"
+      elif [ -n "$BLASTDOOR_BASELINE_ENABLED" ]; then
+        # The tip of the branch this targets, not the merge base: a branch
+        # behind its target has a merge base predating the backlog, and the
+        # baseline would come back clean while the backlog is still waiting.
+        # Never on the default branch, where the baseline would be this branch
+        # itself and its own pending changes would deny every commit.
+        baseline_arg="--baseline-ref origin/${CI_MERGE_REQUEST_TARGET_BRANCH_NAME:-$CI_DEFAULT_BRANCH}"
       fi
     - blastdoor detect --root "$BLASTDOOR_ROOT" $base_ref_arg | tee "$BLASTDOOR_DIR/units.txt"
     # Install the tool versions first, in the same job: a toolchain that will
@@ -118,7 +137,7 @@ blastdoor:plan:
     # separate legs overrides this job with its own parallel:matrix supplying
     # ENV and a per-environment --units-file; left alone, --environment "" is
     # inert — no environment.txt is written, and the feature stays off.
-    - blastdoor plan --units-file "$BLASTDOOR_DIR/units.txt" --out-dir "$BLASTDOOR_DIR" --environment "$ENV" $base_ref_arg
+    - blastdoor plan --units-file "$BLASTDOOR_DIR/units.txt" --out-dir "$BLASTDOOR_DIR" --environment "$ENV" $base_ref_arg $baseline_arg
   artifacts:
     paths:
       - $BLASTDOOR_DIR/
@@ -159,6 +178,10 @@ blastdoor:eval:
       for p in $BLASTDOOR_GUARD_PATHS; do guards="$guards --guard-path $p"; done
       ignores=""
       for p in $BLASTDOOR_IGNORE_PATHS; do ignores="$ignores --ignore-path $p"; done
+      baseline_arg=""
+      if [ -n "$BLASTDOOR_BASELINE_ENABLED" ] && [ "$CI_COMMIT_BRANCH" != "$CI_DEFAULT_BRANCH" ]; then
+        baseline_arg="--require-clean-baseline"
+      fi
       # Still unset when eval runs: $ignores is unquoted there too, and this
       # is the last command, so its exit status is the job's.
       blastdoor eval \
@@ -169,7 +192,7 @@ blastdoor:eval:
         --require-coverage \
         --deployment-method-wish "$BLASTDOOR_DEPLOYMENT_METHOD_WISH" \
         --apply-include "$BLASTDOOR_APPLY_INCLUDE" \
-        $base_ref_arg \
+        $base_ref_arg $baseline_arg \
         $guards $ignores
   artifacts:
     reports:
