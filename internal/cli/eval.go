@@ -13,6 +13,7 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/raccoon-core/blastdoor/internal/baseline"
 	"github.com/raccoon-core/blastdoor/internal/detect"
 	"github.com/raccoon-core/blastdoor/internal/policy"
 	"github.com/raccoon-core/blastdoor/internal/report"
@@ -30,9 +31,10 @@ func newEvalCmd() *cobra.Command {
 		baseRef     string
 		headRef     string
 
-		requireCoverage bool
-		ignorePaths     []string
-		root            string
+		requireCoverage      bool
+		ignorePaths          []string
+		root                 string
+		requireCleanBaseline bool
 
 		wishFlag            string
 		applyInclude        string
@@ -68,6 +70,16 @@ letting it through unseen, it forces a review:
 
 Name the paths allowed to go unplanned with --ignore-path. Guarded paths are
 already exempt: they force review on their own.
+
+--require-clean-baseline denies when a unit that this change would apply
+something to still has changes waiting to be applied on the branch it targets.
+Those ride along in this plan and in the apply that follows approval, having
+appeared in nobody's diff. It needs 'blastdoor plan --baseline-ref' to have run:
+
+  blastdoor plan --baseline-ref origin/main --units-file units.txt
+  blastdoor eval --plan-dir .blastdoor --policy policy --require-clean-baseline
+
+Approving does not settle this. Apply or revert on the target branch first.
 
 Point --plan at a single file while writing policies:
 
@@ -154,6 +166,19 @@ or --plan-dir at the tree 'blastdoor plan' produced, to judge a whole change.`,
 				rep.RequireCoverage(missing)
 			}
 
+			// Before Decide, like the guards above: an environment cannot apply
+			// unattended while its target branch has changes nobody reviewed in
+			// a diff, and Decide can only see that once this has recorded it.
+			// Decide only ever sets a deployment method on Pass, so this deny is
+			// what stops the auto-apply.
+			if requireCleanBaseline {
+				dirty, err := dirtyBaselines(plans)
+				if err != nil {
+					return err
+				}
+				rep.RequireCleanBaseline(dirty)
+			}
+
 			wish, err := report.ParseWish(wishFlag)
 			if err != nil {
 				return err
@@ -176,6 +201,14 @@ or --plan-dir at the tree 'blastdoor plan' produced, to judge a whole change.`,
 			}
 
 			if failOnBlock && rep.Verdict != policy.Pass {
+				if len(rep.Baseline) > 0 {
+					units := make([]string, 0, len(rep.Baseline))
+					for _, u := range rep.Baseline {
+						units = append(units, u.Path)
+					}
+					return fmt.Errorf("%s: the branch this targets has changes waiting to be applied (%s)",
+						rep.Verdict, strings.Join(units, ", "))
+				}
 				if len(rep.Guarded) > 0 {
 					return fmt.Errorf("%s: this change edits guarded paths (%s)", rep.Verdict, strings.Join(rep.Guarded, ", "))
 				}
@@ -199,6 +232,8 @@ or --plan-dir at the tree 'blastdoor plan' produced, to judge a whole change.`,
 	cmd.Flags().BoolVar(&requireCoverage, "require-coverage", false, "force review when the change edits files no unit selects")
 	cmd.Flags().StringArrayVar(&ignorePaths, "ignore-path", nil, "path --require-coverage may leave unplanned (repeatable)")
 	cmd.Flags().StringVar(&root, "root", ".", "directory to scan for units when checking coverage")
+	cmd.Flags().BoolVar(&requireCleanBaseline, "require-clean-baseline", false,
+		"deny when a changed unit's baseline still has changes waiting to be applied")
 
 	// Deliberately not readable from .blastdoor.yml, and this needs no code:
 	// the config decoder runs with KnownFields(true), so an `environments:` key
@@ -434,6 +469,54 @@ func environmentFor(planFile string) string {
 		return ""
 	}
 	return strings.TrimSpace(string(raw))
+}
+
+// dirtyBaselines lists the units whose target branch still has changes waiting
+// to be applied.
+//
+// Unlike enginesFor and environmentFor, a missing sidecar here is not silence.
+// Those two report a fact that is nice to have; this one reports the absence of
+// a check the caller explicitly asked for. A unit with changes of its own and no
+// baseline recorded is reported as missing, and denies — a fact nobody could
+// read is not a clean one.
+//
+// A unit whose own plan applies nothing is skipped, matching what plan does:
+// nothing there can carry a backlog along with it, and this is what lets a
+// merge request which clears the backlog through.
+func dirtyBaselines(plans []planInput) ([]report.BaselineUnit, error) {
+	var out []report.BaselineUnit
+	for _, p := range plans {
+		raw, err := os.ReadFile(p.file)
+		if err != nil {
+			return nil, fmt.Errorf("reading %s: %w", p.file, err)
+		}
+		head, err := policy.ApplicableAddresses(raw)
+		if err != nil {
+			return nil, fmt.Errorf("%s: %w", p.file, err)
+		}
+		if len(head) == 0 {
+			continue
+		}
+
+		res, found, err := baseline.Read(filepath.Dir(p.file))
+		if err != nil {
+			return nil, err
+		}
+		if !found {
+			out = append(out, report.BaselineUnit{Path: p.name, Missing: true})
+			continue
+		}
+		if res.State != baseline.Dirty {
+			continue
+		}
+		out = append(out, report.BaselineUnit{
+			Path:      p.name,
+			Ref:       res.Ref,
+			Commit:    res.Commit,
+			Addresses: res.Addresses,
+		})
+	}
+	return out, nil
 }
 
 // uncoveredFiles lists the changed files that select no unit, less the ones
