@@ -135,6 +135,7 @@ or --plan-dir at the tree 'blastdoor plan' produced, to judge a whole change.`,
 			}
 
 			rep := report.Build(units)
+			rep.Version = BuildVersion()
 			rep.Engines = enginesFor(plans)
 			rep.Layers = provenance
 

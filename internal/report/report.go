@@ -34,6 +34,10 @@ type Report struct {
 	Guarded []string `json:"guarded,omitempty"`
 	// Uncovered lists changed files that no plan accounts for.
 	Uncovered []string `json:"uncovered,omitempty"`
+	// Version is the blastdoor that produced this report. Policies move, and
+	// so does the binary reading them: a verdict cannot be explained later
+	// without knowing which one judged it. Empty when nothing recorded it.
+	Version string `json:"blastdoor_version,omitempty"`
 	// Layers records the policy tiers that judged this run, highest weight
 	// first, with the commit each resolved to. A ref like "main" moves, so
 	// without the commit a verdict cannot be explained afterwards.
@@ -339,11 +343,18 @@ func (r Report) layerBlock() string {
 		return ""
 	}
 
+	// Named only when the report carries one: a report written by a blastdoor
+	// old enough not to have said should not be attributed to a version.
+	judge := "Judged by"
+	if r.Version != "" {
+		judge += " Blastdoor " + r.Version + " and the following policies"
+	}
+
 	var b strings.Builder
 	if len(r.Layers) > 1 {
-		b.WriteString("\n<sub>Judged by, highest weight first:</sub>\n\n")
+		b.WriteString("\n<sub>" + judge + ", highest weight first:</sub>\n\n")
 	} else {
-		b.WriteString("\n<sub>Judged by:</sub>\n\n")
+		b.WriteString("\n<sub>" + judge + ":</sub>\n\n")
 	}
 
 	for _, l := range r.Layers {

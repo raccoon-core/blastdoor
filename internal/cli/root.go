@@ -10,9 +10,6 @@ import (
 	"github.com/spf13/cobra"
 )
 
-// Version is stamped at build time with -ldflags.
-var Version = "dev"
-
 // NewRootCmd builds the blastdoor command tree.
 func NewRootCmd() *cobra.Command {
 	root := &cobra.Command{
@@ -26,7 +23,7 @@ plan. A change no policy matches is denied, so a plan touching something no
 policy covers is never waved through.`,
 		SilenceUsage:  true,
 		SilenceErrors: true,
-		Version:       Version,
+		Version:       BuildVersion(),
 		// One place resolves the configuration, so every subcommand sees the
 		// same one and precedence is applied in one way.
 		PersistentPreRunE: func(_ *cobra.Command, _ []string) error {

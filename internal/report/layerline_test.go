@@ -99,6 +99,33 @@ func TestLayerBlockSurvivesAnEmptyRun(t *testing.T) {
 	}
 }
 
+// The binary moves like the policies do, so the note names it too.
+func TestLayerBlockNamesTheBlastdoorVersion(t *testing.T) {
+	rep := Build([]Unit{{Path: "u", Changes: []policy.Change{change("kafka_topic.x", policy.Pass, "fine")}}})
+	rep.Version = "1.2.3"
+	rep.Layers = []Layer{{Name: "local", Repository: ".", Directory: "policy"}}
+
+	var b strings.Builder
+	if err := rep.WriteMarkdown(&b); err != nil {
+		t.Fatalf("WriteMarkdown: %v", err)
+	}
+	if !strings.Contains(b.String(), "Judged by Blastdoor 1.2.3 and the following policies:") {
+		t.Errorf("summary does not name the version that judged it:\n%s", b.String())
+	}
+}
+
+// A report that recorded no version is not attributed to one.
+func TestLayerBlockWithoutAVersion(t *testing.T) {
+	got := summaryWithLayers(t, Layer{Name: "local", Repository: ".", Directory: "policy"})
+
+	if !strings.Contains(got, "Judged by:") {
+		t.Errorf("summary should fall back to a bare heading:\n%s", got)
+	}
+	if strings.Contains(got, "Blastdoor dev") {
+		t.Errorf("summary invented a version:\n%s", got)
+	}
+}
+
 // Nothing recorded means nothing claimed.
 func TestNoLayersSaysNothing(t *testing.T) {
 	if got := summaryWithLayers(t); strings.Contains(got, "Judged by") {
