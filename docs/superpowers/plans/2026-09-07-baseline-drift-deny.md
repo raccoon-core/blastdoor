@@ -1692,7 +1692,20 @@ Check `README.md` for a flag or variable list; if it has one, add the same two f
 
 - [ ] **Step 6: Verify the template YAML parses**
 
-Run: `python3 -c "import yaml,sys; yaml.safe_load(open('ci/gitlab/blastdoor.yml'))" && echo ok`
+GitLab's `!reference` is a custom tag that plain `yaml.safe_load` rejects, so the loader has to be told about it — without this the check fails on the file as it stands today and proves nothing about your change.
+
+Run:
+
+```bash
+python3 -c "
+import yaml
+yaml.SafeLoader.add_constructor('!reference', lambda l, n: None)
+doc = yaml.safe_load(open('ci/gitlab/blastdoor.yml'))
+assert 'BLASTDOOR_BASELINE_ENABLED' in doc['variables'], 'variable missing'
+print('ok')
+"
+```
+
 Expected: `ok`.
 
 - [ ] **Step 7: Run the full check**
