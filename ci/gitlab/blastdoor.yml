@@ -37,6 +37,12 @@ variables:
   # expands it by reference and a reader should be able to find it defined on
   # the way down rather than the way back up.
   BLASTDOOR_APPLY_INCLUDE: .gitlab/blastdoor-apply.yml
+  # Set these two to switch BLASTDOOR_APPLY_INCLUDE from a `local:` include
+  # (the repository's own file, the default) to a `project:`/`ref:` include, so
+  # a .blastdoor:apply job shared across several repositories can be referenced
+  # instead of copied into each one. Leave both empty to keep the local file.
+  BLASTDOOR_APPLY_INCLUDE_PROJECT: ""
+  BLASTDOOR_APPLY_INCLUDE_REF: ""
   # Paths that force human review when a merge request changes them, whatever
   # the verdict. Without this, a change can rewrite the policies that judge it,
   # or the pipeline that runs them, in the same commit.
@@ -92,9 +98,23 @@ variables:
   # its own unattended production apply, so this is not readable from the
   # repository's config at all — blastdoor rejects an `environments:` key there.
   #
-  # Leave it empty and the whole feature is off: no new dotenv keys, no
-  # generated pipeline, no change in behaviour.
+  # Leaving it empty does not turn auto off: an environment auto-applies when
+  # policy alone says every change in it is safe to automate (see
+  # BLASTDOOR_APPLY_ENABLED below for the actual on/off switch). This is only
+  # a ceiling on top of that — narrowing what policy would otherwise allow,
+  # never widening it.
   BLASTDOOR_DEPLOYMENT_METHOD_WISH: ""
+  # The kill switch for the apply side. Non-empty means it runs on the default
+  # branch; "" stops the generated apply pipeline from being triggered at all
+  # on the next pipeline, no revert needed, if an unattended apply ever starts
+  # doing something nobody wants.
+  #
+  # True by default, deliberately: this is not an opt-in gate. Whether to
+  # auto-apply at all is policy's call (an allow rule has to name an
+  # environment safe to automate before anything ever applies unattended) —
+  # this variable only ever turns the entire apply side off, repository-wide,
+  # in an emergency.
+  BLASTDOOR_APPLY_ENABLED: "true"
 
 .blastdoor:rules:
   # Run on merge request pipelines, and on branch pipelines that no merge
@@ -104,10 +124,13 @@ variables:
   default:
     - if: $CI_PIPELINE_SOURCE == "merge_request_event"
     - if: $CI_COMMIT_BRANCH && $CI_COMMIT_BRANCH != $CI_DEFAULT_BRANCH && $CI_OPEN_MERGE_REQUESTS == null
-  # The apply side. Only on the default branch, and only when a wish was
-  # stated — without one there is no generated pipeline to trigger.
+  # The apply side, on the default branch after the merge. Gated on
+  # BLASTDOOR_APPLY_ENABLED rather than the wish: 'blastdoor eval' writes the
+  # generated apply pipeline whenever Decide found any environment to decide
+  # about, which no longer requires a wish — policy's own allow rules can
+  # authorise auto on their own (see BLASTDOOR_DEPLOYMENT_METHOD_WISH above).
   main:
-    - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH && $BLASTDOOR_DEPLOYMENT_METHOD_WISH != ""
+    - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH && $BLASTDOOR_APPLY_ENABLED != ""
 
 # Installs the tool versions each unit asks for, then plans every unit the
 # change touches. Version selection belongs to tenv or mise, whichever
@@ -203,6 +226,8 @@ blastdoor:eval:
         --require-coverage \
         --deployment-method-wish "$BLASTDOOR_DEPLOYMENT_METHOD_WISH" \
         --apply-include "$BLASTDOOR_APPLY_INCLUDE" \
+        --apply-include-project "$BLASTDOOR_APPLY_INCLUDE_PROJECT" \
+        --apply-include-ref "$BLASTDOOR_APPLY_INCLUDE_REF" \
         $base_ref_arg $baseline_arg \
         $guards $ignores
   artifacts:
@@ -247,14 +272,16 @@ blastdoor:gate:
 # stage: .post, not a named stage. GitLab checks every job's stage against the
 # pipeline's stages: during YAML processing, before rules: are evaluated — so a
 # stage this template invented would fail pipeline *creation* for every
-# consumer, wish or no wish, unless they first edited their stages: list. .pre
-# and .post always exist and never need declaring, so this job costs a
-# consumer nothing to adopt.
+# consumer, whether or not anything ever ends up applying, unless they first
+# edited their stages: list. .pre and .post always exist and never need
+# declaring, so this job costs a consumer nothing to adopt.
 #
-# eval always writes apply.gitlab-ci.yml when the main rule below fires (a
-# wish was stated on the default branch), so the artifact this job includes is
-# always there to find. An all-none change — the ordinary case for a docs-only
-# or CI-only commit — still gets a file; WriteApplyYAML gives it a single
+# eval writes apply.gitlab-ci.yml whenever it ran and found any environment to
+# decide about — no longer conditioned on a wish, since policy's own allow
+# rules can authorise auto on their own — so on the default branch (where the
+# main rule below can fire) the artifact this job includes is always there to
+# find. An all-none change — the ordinary case for a docs-only or CI-only
+# commit — still gets a file; WriteApplyYAML gives it a single
 # placeholder job rather than leaving the file jobless or unwritten, because
 # GitLab refuses to build a child pipeline with no jobs in it, and there is no
 # rules: condition able to route around a missing artifact after the fact:
