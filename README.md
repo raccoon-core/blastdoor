@@ -10,7 +10,7 @@ the worst one decides the merge request.
 
 Each rule answers one question about one change — is this fine, does a person
 need to look, or is this not allowed — and says why in a sentence the reviewer
-reads. **A change no policy matches is denied.**
+reads. **A change no policy matches is sent to review.**
 
 ## Quick start
 
@@ -29,9 +29,9 @@ $ docker run --rm -v "$PWD:/work" raccooncore/blastdoor \
 | pass | … | `kafka_topic.topics["orders.created.v1"]` (create) | creating topic orders.created.v1 |
 ```
 
-Swap the plan for `unmatched-resource.json` and it comes back **denied**: no
-rule matches an `aws_s3_bucket`, so the door stays shut and the summary names
-the change that needs one.
+Swap the plan for `unmatched-resource.json` and it comes back **review
+required**: no rule matches an `aws_s3_bucket`, so a person has to look, and
+the summary names the change that needs a rule.
 
 A policy is Rego in `package blastdoor` contributing to three rule sets, each
 judgement carrying the resource it is about and the reason a reviewer reads:
@@ -65,7 +65,7 @@ built from [`docs/`](docs/):
 | | |
 |---|---|
 | [Your first policy](https://raccoon-core.github.io/blastdoor/writing-policies/) | The shape of a rule, and what `input` holds |
-| [The three verdicts](https://raccoon-core.github.io/blastdoor/verdicts/) | What `pass`, `review` and `deny` mean, and what is denied by default |
+| [The three verdicts](https://raccoon-core.github.io/blastdoor/verdicts/) | What `pass`, `review` and `deny` mean, and what is sent to review by default |
 | [Commands](https://raccoon-core.github.io/blastdoor/commands/) | `detect`, `prepare`, `plan`, `eval`, `gate` |
 | [Configuration](https://raccoon-core.github.io/blastdoor/configuration/) | `.blastdoor.yml`, environment, gating, layered policies |
 | [Terraform, OpenTofu, Terragrunt](https://raccoon-core.github.io/blastdoor/toolchain/) | How the version and the binary are resolved |

@@ -20,8 +20,8 @@ func TestExamplePlansJudgeAsDocumented(t *testing.T) {
 		"no-op.json":                           policy.Pass,
 		"kafka-topic-delete.json":              policy.Review,
 		"kafka-acl-wildcard.json":              policy.Deny,
-		"unmatched-resource.json":              policy.Deny,
-		"managed-resource-read-lookalike.json": policy.Deny,
+		"unmatched-resource.json":              policy.Review,
+		"managed-resource-read-lookalike.json": policy.Review,
 	}
 
 	evaluator, err := policy.New(context.Background(), policy.Options{

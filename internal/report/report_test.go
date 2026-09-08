@@ -11,6 +11,17 @@ func change(address string, v policy.Verdict, reasons ...string) policy.Change {
 	return policy.Change{Address: address, Verdict: v, Reasons: reasons, Actions: []string{"create"}}
 }
 
+// autoChange is a Pass change whose rule vouched for the named environments —
+// the Decide tests below fold a wish and this together the way blastdoor
+// eval does, so a test wanting "auto" now has to earn it on both counts.
+func autoChange(address string, envs ...string) policy.Change {
+	method := map[string]string{}
+	for _, e := range envs {
+		method[e] = "auto"
+	}
+	return policy.Change{Address: address, Verdict: policy.Pass, Reasons: []string{"fine"}, Actions: []string{"create"}, DeploymentMethod: method}
+}
+
 // The plan takes the worst verdict anywhere in it — no arithmetic.
 func TestBuildTakesTheWorstVerdict(t *testing.T) {
 	tests := []struct {
@@ -121,7 +132,7 @@ func TestWriteEnv(t *testing.T) {
 // A denial says so plainly, and names what caused it.
 func TestWriteMarkdownForDeny(t *testing.T) {
 	rep := Build([]Unit{{Path: "terraform/prd", Changes: []policy.Change{
-		change("aws_iam_policy.admin", policy.Deny, policy.ReasonUnjudged),
+		change("aws_iam_policy.admin", policy.Deny, "never"),
 	}}})
 
 	var b strings.Builder
@@ -129,10 +140,31 @@ func TestWriteMarkdownForDeny(t *testing.T) {
 		t.Fatalf("WriteMarkdown: %v", err)
 	}
 
-	for _, want := range []string{"Denied", "aws_iam_policy.admin", "terraform/prd", "no policy at all", "Approving does not clear this"} {
+	for _, want := range []string{"Denied", "aws_iam_policy.admin", "terraform/prd", "Approving does not clear this"} {
 		if !strings.Contains(b.String(), want) {
 			t.Errorf("summary is missing %q:\n%s", want, b.String())
 		}
+	}
+}
+
+// A change no policy judged is sent to review, not denied, and says so.
+func TestWriteMarkdownForUnjudged(t *testing.T) {
+	rep := Build([]Unit{{Path: "terraform/prd", Changes: []policy.Change{
+		change("aws_iam_policy.admin", policy.Review, policy.ReasonUnjudged),
+	}}})
+
+	var b strings.Builder
+	if err := rep.WriteMarkdown(&b); err != nil {
+		t.Fatalf("WriteMarkdown: %v", err)
+	}
+
+	for _, want := range []string{"Review required", "aws_iam_policy.admin", "terraform/prd", "no policy at all"} {
+		if !strings.Contains(b.String(), want) {
+			t.Errorf("summary is missing %q:\n%s", want, b.String())
+		}
+	}
+	if strings.Contains(b.String(), "Denied") {
+		t.Errorf("unjudged change read as denied:\n%s", b.String())
 	}
 }
 
@@ -176,5 +208,273 @@ func TestWriteMarkdownEscapesPipes(t *testing.T) {
 	}
 	if !strings.Contains(b.String(), `a \| b`) {
 		t.Errorf("pipe was not escaped:\n%s", b.String())
+	}
+}
+
+// decided builds a report that has already been through Decide.
+func decided(t *testing.T, wish string, units []Unit) Report {
+	t.Helper()
+	rep := Build(units)
+	w, err := ParseWish(wish)
+	if err != nil {
+		t.Fatalf("ParseWish: %v", err)
+	}
+	if err := rep.Decide(w); err != nil {
+		t.Fatalf("Decide: %v", err)
+	}
+	return rep
+}
+
+func TestWriteEnvCarriesTheDeploymentMethods(t *testing.T) {
+	rep := decided(t, "int=auto,stg=auto,prd=manual", []Unit{
+		{Path: "ops/int/a", Environment: "int", Changes: []policy.Change{autoChange("x", "int")}},
+		{Path: "ops/stg/a", Environment: "stg", Changes: []policy.Change{change("y", policy.Review, "look")}},
+	})
+
+	var b strings.Builder
+	if err := rep.WriteEnv(&b); err != nil {
+		t.Fatalf("WriteEnv: %v", err)
+	}
+	got := b.String()
+
+	for _, want := range []string{
+		"BLASTDOOR_DEPLOY_INT=auto\n",
+		"BLASTDOOR_DEPLOY_STG=manual\n",
+		"BLASTDOOR_DEPLOY_PRD=none\n",
+		"BLASTDOOR_VERDICT=review\n",
+	} {
+		if !strings.Contains(got, want) {
+			t.Errorf("WriteEnv missing %q, got:\n%s", want, got)
+		}
+	}
+}
+
+// No wish, no new keys: an existing pipeline sees exactly what it saw before.
+func TestWriteEnvUnchangedWithoutAWish(t *testing.T) {
+	rep := Build([]Unit{{Path: "a", Changes: []policy.Change{change("x", policy.Pass, "fine")}}})
+
+	var b strings.Builder
+	if err := rep.WriteEnv(&b); err != nil {
+		t.Fatalf("WriteEnv: %v", err)
+	}
+	if strings.Contains(b.String(), "BLASTDOOR_DEPLOY_") {
+		t.Errorf("WriteEnv wrote a deployment key with no wish stated:\n%s", b.String())
+	}
+}
+
+func TestWriteMarkdownShowsTheEnvironmentTable(t *testing.T) {
+	rep := decided(t, "int=auto,prd=manual", []Unit{
+		{Path: "ops/int/a", Environment: "int", Changes: []policy.Change{autoChange("x", "int")}},
+	})
+
+	var b strings.Builder
+	if err := rep.WriteMarkdown(&b); err != nil {
+		t.Fatalf("WriteMarkdown: %v", err)
+	}
+	got := b.String()
+
+	for _, want := range []string{"| Environment | Apply | Why |", "✅ auto", "— none"} {
+		if !strings.Contains(got, want) {
+			t.Errorf("WriteMarkdown missing %q, got:\n%s", want, got)
+		}
+	}
+
+	// Below the verdict table: a reviewer reads what changed before reading
+	// what approving it will cause.
+	if strings.Index(got, "| Environment |") < strings.Index(got, "| Verdict |") {
+		t.Error("the environment table must come after the verdict table")
+	}
+}
+
+func TestRequireCleanBaselineDenies(t *testing.T) {
+	rep := Build([]Unit{{
+		Path:    "terraform/prd",
+		Changes: []policy.Change{{Address: "kafka_topic.new", Verdict: policy.Pass}},
+	}})
+	if rep.Verdict != policy.Pass {
+		t.Fatalf("setup: verdict is %s, want pass", rep.Verdict)
+	}
+
+	rep.RequireCleanBaseline([]BaselineUnit{{
+		Path:      "terraform/prd",
+		Ref:       "origin/main",
+		Commit:    "2907a6899eda3dfb5a06647963bf5b5759eca6e6",
+		Addresses: []string{`kafka_topic.topics["scp.example.v1"]`},
+	}})
+
+	// Deny, not review: approving does not apply the backlog, so approving
+	// cannot be what settles it.
+	if rep.Verdict != policy.Deny {
+		t.Errorf("verdict = %s, want deny", rep.Verdict)
+	}
+	if len(rep.Baseline) != 1 {
+		t.Fatalf("Baseline has %d entries, want 1", len(rep.Baseline))
+	}
+}
+
+func TestRequireCleanBaselineWithNothingDirtyChangesNothing(t *testing.T) {
+	rep := Build([]Unit{{
+		Path:    "terraform/int",
+		Changes: []policy.Change{{Address: "kafka_topic.new", Verdict: policy.Pass}},
+	}})
+
+	rep.RequireCleanBaseline(nil)
+
+	if rep.Verdict != policy.Pass {
+		t.Errorf("verdict = %s, want pass", rep.Verdict)
+	}
+	if len(rep.Baseline) != 0 {
+		t.Errorf("Baseline has %d entries, want 0", len(rep.Baseline))
+	}
+}
+
+func TestRequireCleanBaselineNeverSoftens(t *testing.T) {
+	rep := Report{Verdict: policy.Deny}
+	rep.RequireCleanBaseline([]BaselineUnit{{Path: "terraform/prd", Missing: true}})
+	if rep.Verdict != policy.Deny {
+		t.Errorf("verdict = %s, want deny", rep.Verdict)
+	}
+}
+
+func TestMarkdownNamesTheBaselineBacklog(t *testing.T) {
+	rep := Build([]Unit{{
+		Path:    "terraform/prd",
+		Changes: []policy.Change{{Address: "kafka_topic.new", Verdict: policy.Pass}},
+	}})
+	rep.RequireCleanBaseline([]BaselineUnit{{
+		Path:      "terraform/prd",
+		Ref:       "origin/main",
+		Commit:    "2907a6899eda3dfb5a06647963bf5b5759eca6e6",
+		Addresses: []string{`kafka_topic.topics["scp.example.v1"]`},
+	}})
+
+	var b strings.Builder
+	if err := rep.WriteMarkdown(&b); err != nil {
+		t.Fatalf("WriteMarkdown: %v", err)
+	}
+	got := b.String()
+
+	for _, want := range []string{
+		"have not been applied",
+		"terraform/prd",
+		`kafka_topic.topics["scp.example.v1"]`,
+		"2907a68",
+	} {
+		if !strings.Contains(got, want) {
+			t.Errorf("summary does not mention %q:\n%s", want, got)
+		}
+	}
+}
+
+func TestMarkdownSaysWhenABaselineIsMissing(t *testing.T) {
+	rep := Build([]Unit{{
+		Path:    "terraform/prd",
+		Changes: []policy.Change{{Address: "kafka_topic.new", Verdict: policy.Pass}},
+	}})
+	rep.RequireCleanBaseline([]BaselineUnit{{Path: "terraform/prd", Missing: true}})
+
+	var b strings.Builder
+	if err := rep.WriteMarkdown(&b); err != nil {
+		t.Fatalf("WriteMarkdown: %v", err)
+	}
+	if !strings.Contains(b.String(), "no baseline") {
+		t.Errorf("summary does not say the baseline is missing:\n%s", b.String())
+	}
+	// The Missing branch's own continue is what stops this. Without it,
+	// execution falls through into the dirty-baseline line below, which
+	// prints an empty address list against an empty commit — "(at ``)" — off
+	// a BaselineUnit that never carried either. "no baseline" alone still
+	// passes if that continue is ever dropped, since it comes from the line
+	// above the fallthrough would append to, not replace.
+	if strings.Contains(b.String(), "(at ``)") {
+		t.Errorf("summary renders the dirty-baseline line for a missing baseline too:\n%s", b.String())
+	}
+}
+
+func TestDenyHeadlineWithNoDeniedChanges(t *testing.T) {
+	// The deny comes from the baseline, not from a scored change. "0 change(s)
+	// a policy does not allow" reads as nothing being wrong, directly above the
+	// list of what is wrong. Review already has this special case; deny needs
+	// its counterpart.
+	rep := Build([]Unit{{
+		Path:    "terraform/prd",
+		Changes: []policy.Change{{Address: "kafka_topic.new", Verdict: policy.Pass}},
+	}})
+	rep.RequireCleanBaseline([]BaselineUnit{{Path: "terraform/prd", Missing: true}})
+
+	var b strings.Builder
+	if err := rep.WriteMarkdown(&b); err != nil {
+		t.Fatalf("WriteMarkdown: %v", err)
+	}
+	if strings.Contains(b.String(), "0 change(s)") {
+		t.Errorf("headline claims 0 change(s):\n%s", b.String())
+	}
+	if !strings.Contains(b.String(), "Denied") {
+		t.Errorf("headline does not say Denied:\n%s", b.String())
+	}
+}
+
+func TestWriteMarkdownCollapsesTheTables(t *testing.T) {
+	rep := decided(t, "int=auto,prd=manual", []Unit{
+		{Path: "ops/int/a", Environment: "int", Changes: []policy.Change{autoChange("x", "int")}},
+	})
+	rep.Version = "1.2.3"
+	rep.Layers = []Layer{{Name: "operations", Repository: "https://example.invalid/policies.git", Directory: "policies", Ref: "main", Commit: "de159dd0"}}
+
+	var b strings.Builder
+	if err := rep.WriteMarkdown(&b); err != nil {
+		t.Fatalf("WriteMarkdown: %v", err)
+	}
+	got := b.String()
+
+	if !strings.Contains(got, "<summary>Plan and expected deployment method</summary>") {
+		t.Fatalf("no details summary:\n%s", got)
+	}
+
+	// GitLab renders markdown inside <details> only when a blank line separates
+	// it from the tags. Without these the tables come out as literal pipes.
+	if !strings.Contains(got, "</summary>\n\n") {
+		t.Error("no blank line after </summary>, so the tables will not render")
+	}
+	if !strings.Contains(got, "\n\n</details>") {
+		t.Error("no blank line before </details>, so the tables will not render")
+	}
+
+	open, close := strings.Index(got, "<details>"), strings.Index(got, "</details>")
+	inside := func(needle string) bool {
+		i := strings.Index(got, needle)
+		return i > open && i < close
+	}
+	for _, want := range []string{"| Verdict | Unit | Change | Why |", "| Environment | Apply | Why |", "expected deployment method for this change"} {
+		if !inside(want) {
+			t.Errorf("%q is not inside the collapsible section:\n%s", want, got)
+		}
+	}
+
+	// The decision stays visible above the fold; the provenance sits below it.
+	if i := strings.Index(got, "**Pass**"); i < 0 || i > open {
+		t.Error("the verdict headline must stay above the collapsible section")
+	}
+	if i := strings.Index(got, "Judged by"); i < close {
+		t.Error("the judged-by block must sit below the collapsible section")
+	}
+}
+
+func TestWriteMarkdownWithNothingToShowEmitsNoDetails(t *testing.T) {
+	// An empty collapsible is worse than none: it invites a click that reveals
+	// nothing. The "nothing was checked" warning itself stays visible.
+	var rep Report
+
+	var b strings.Builder
+	if err := rep.WriteMarkdown(&b); err != nil {
+		t.Fatalf("WriteMarkdown: %v", err)
+	}
+	got := b.String()
+
+	if strings.Contains(got, "<details>") {
+		t.Errorf("emitted an empty collapsible section:\n%s", got)
+	}
+	if !strings.Contains(got, "No units were scored") {
+		t.Errorf("the no-units warning must stay visible:\n%s", got)
 	}
 }

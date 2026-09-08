@@ -295,3 +295,39 @@ func TestResolveBaseRefFailsWithGuidance(t *testing.T) {
 		t.Errorf("error does not mention the shallow-clone fix: %v", err)
 	}
 }
+
+// The default-branch pipeline diffs against CI_COMMIT_BEFORE_SHA, which GitLab
+// sets to all zeros on a branch's first pipeline. Git resolves it to nothing,
+// and the error that follows names a SHA nobody wrote — so say what actually
+// happened.
+func TestResolveBaseRefRejectsTheAllZeroSHA(t *testing.T) {
+	tests := []struct {
+		name string
+		ref  string
+	}{
+		{"sha1", strings.Repeat("0", 40)},
+		{"sha256", strings.Repeat("0", 64)},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			_, err := ResolveBaseRef(Options{BaseRef: tc.ref})
+			if err == nil {
+				t.Fatal("ResolveBaseRef = nil error, want one")
+			}
+			if !strings.Contains(err.Error(), "CI_COMMIT_BEFORE_SHA") {
+				t.Errorf("error does not name the variable that holds it: %v", err)
+			}
+		})
+	}
+}
+
+func TestResolveBaseRefKeepsARealRef(t *testing.T) {
+	got, err := ResolveBaseRef(Options{BaseRef: "origin/main"})
+	if err != nil {
+		t.Fatalf("ResolveBaseRef: %v", err)
+	}
+	if got != "origin/main" {
+		t.Errorf("ResolveBaseRef = %q, want %q", got, "origin/main")
+	}
+}

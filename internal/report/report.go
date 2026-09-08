@@ -14,9 +14,12 @@ import (
 
 // Unit is one planned directory and what the policies made of it.
 type Unit struct {
-	Path    string          `json:"path"`
-	Verdict policy.Verdict  `json:"verdict"`
-	Changes []policy.Change `json:"changes"`
+	Path string `json:"path"`
+	// Environment is what 'blastdoor plan --environment' recorded beside this
+	// unit's plan. Empty when nothing recorded one.
+	Environment string          `json:"environment,omitempty"`
+	Verdict     policy.Verdict  `json:"verdict"`
+	Changes     []policy.Change `json:"changes"`
 }
 
 // Report is the complete result of an evaluation run.
@@ -31,6 +34,14 @@ type Report struct {
 	Guarded []string `json:"guarded,omitempty"`
 	// Uncovered lists changed files that no plan accounts for.
 	Uncovered []string `json:"uncovered,omitempty"`
+	// Baseline lists units whose target branch still has changes waiting to be
+	// applied. Such a change rides along inside this merge request's plan and
+	// its apply, having appeared in nobody's diff.
+	Baseline []BaselineUnit `json:"baseline,omitempty"`
+	// Version is the blastdoor that produced this report. Policies move, and
+	// so does the binary reading them: a verdict cannot be explained later
+	// without knowing which one judged it. Empty when nothing recorded it.
+	Version string `json:"blastdoor_version,omitempty"`
 	// Layers records the policy tiers that judged this run, highest weight
 	// first, with the commit each resolved to. A ref like "main" moves, so
 	// without the commit a verdict cannot be explained afterwards.
@@ -38,6 +49,13 @@ type Report struct {
 	// Engines names what produced the plans — terraform, tofu, or both while
 	// a repository is moving between them. Empty when nothing recorded it.
 	Engines []string `json:"engines,omitempty"`
+	// Environments says, per environment, whether this change may be applied
+	// unattended. Empty when no unit carries an environment at all — see
+	// Decide — which is what turns the feature off for a repository that has
+	// not arranged per-environment planning. A wish is not required: policy's
+	// own allow rules can authorise auto on their own, and a wish, when
+	// stated, only ever narrows what they allow.
+	Environments []EnvDecision `json:"environments,omitempty"`
 }
 
 // Layer is one policy tier and where it came from.
@@ -48,6 +66,22 @@ type Layer struct {
 	Ref        string `json:"ref,omitempty"`
 	Commit     string `json:"commit,omitempty"`
 	Weight     int    `json:"weight"`
+}
+
+// BaselineUnit is one unit whose target branch still has changes waiting to be
+// applied.
+type BaselineUnit struct {
+	Path string `json:"path"`
+	// Ref and Commit are the baseline that was planned. The commit matters:
+	// a ref moves, and a verdict cannot be explained afterwards without it.
+	Ref    string `json:"ref,omitempty"`
+	Commit string `json:"commit,omitempty"`
+	// Addresses are what is pending there.
+	Addresses []string `json:"addresses,omitempty"`
+	// Missing says the unit has changes of its own but recorded no baseline at
+	// all. Not the same fact as a dirty baseline, and it denies for a different
+	// reason: nobody knows what is pending, which is not the same as nothing.
+	Missing bool `json:"missing,omitempty"`
 }
 
 // overrideNote says which lower layers were overruled, and to what.
@@ -176,6 +210,25 @@ func (r *Report) RequireCoverage(paths []string) {
 	r.Verdict = policy.Worse(r.Verdict, policy.Review)
 }
 
+// RequireCleanBaseline denies, recording the units whose target branch still
+// has changes waiting to be applied.
+//
+// Deny rather than review, and the asymmetry is the whole point. A reviewer
+// approving this merge request does nothing about a change that merged days ago
+// and was never applied — the plan has to change, by applying or reverting on
+// the target branch. That is what deny means here and in gate: approving alone
+// does not settle it.
+//
+// Like RequireReview and RequireCoverage, it never softens a verdict.
+func (r *Report) RequireCleanBaseline(dirty []BaselineUnit) {
+	if len(dirty) == 0 {
+		return
+	}
+	r.Baseline = append(r.Baseline, dirty...)
+	sort.Slice(r.Baseline, func(i, j int) bool { return r.Baseline[i].Path < r.Baseline[j].Path })
+	r.Verdict = policy.Worse(r.Verdict, policy.Deny)
+}
+
 // WriteJSON writes the machine-readable report.
 func (r Report) WriteJSON(w io.Writer) error {
 	enc := json.NewEncoder(w)
@@ -185,11 +238,23 @@ func (r Report) WriteJSON(w io.Writer) error {
 
 // WriteEnv writes a dotenv file, for GitLab's `artifacts:reports:dotenv` to
 // pass the verdict to later jobs.
+//
+// The deployment methods are a record, not a mechanism: GitLab's `when:` does
+// not expand a variable, and `rules:` — which can set `when:` — is evaluated at
+// pipeline creation, before this file exists. WriteApplyYAML is what actually
+// carries the decision into a job.
 func (r Report) WriteEnv(w io.Writer) error {
-	_, err := fmt.Fprintf(w,
+	if _, err := fmt.Fprintf(w,
 		"BLASTDOOR_VERDICT=%s\nBLASTDOOR_UNIT_COUNT=%d\nBLASTDOOR_PASS_COUNT=%d\nBLASTDOOR_REVIEW_COUNT=%d\nBLASTDOOR_DENY_COUNT=%d\n",
-		r.Verdict, r.UnitCount, r.Counts[policy.Pass], r.Counts[policy.Review], r.Counts[policy.Deny])
-	return err
+		r.Verdict, r.UnitCount, r.Counts[policy.Pass], r.Counts[policy.Review], r.Counts[policy.Deny]); err != nil {
+		return err
+	}
+	for _, e := range r.Environments {
+		if _, err := fmt.Fprintf(w, "BLASTDOOR_DEPLOY_%s=%s\n", strings.ToUpper(e.Name), e.Method); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 // WriteMarkdown writes the human-readable summary posted to the merge request.
@@ -213,6 +278,25 @@ func (r Report) WriteMarkdown(w io.Writer) error {
 		}
 	}
 
+	if len(r.Baseline) > 0 {
+		b.WriteString("\nThe branch this targets has changes that have not been applied yet. " +
+			"They are in this plan but in nobody's diff, so approving this would apply them too. " +
+			"Apply or revert them on the target branch first:\n\n")
+		for _, u := range r.Baseline {
+			if u.Missing {
+				b.WriteString(fmt.Sprintf("- `%s` — no baseline was recorded, so what is pending there is unknown\n",
+					escapePipes(u.Path)))
+				continue
+			}
+			addresses := make([]string, 0, len(u.Addresses))
+			for _, a := range u.Addresses {
+				addresses = append(addresses, "`"+escapePipes(a)+"`")
+			}
+			b.WriteString(fmt.Sprintf("- `%s` — %s (at `%.7s`)\n",
+				escapePipes(u.Path), strings.Join(addresses, ", "), u.Commit))
+		}
+	}
+
 	switch {
 	// Zero units is also what a misconfigured root or a failed detection
 	// looks like, so say it rather than letting it read as approval.
@@ -220,9 +304,9 @@ func (r Report) WriteMarkdown(w io.Writer) error {
 		b.WriteString("\nNo units were scored, so nothing here has been checked.\n")
 	case !r.hasChanges():
 		b.WriteString(fmt.Sprintf("\nNo changes across %d unit(s).\n", r.UnitCount))
-	default:
-		b.WriteString(r.verdictTable())
 	}
+
+	b.WriteString(r.detailsBlock())
 
 	// Last, deliberately. Which policies judged the change is what a reader
 	// goes looking for after reading the verdict, not before — it answers a
@@ -231,6 +315,33 @@ func (r Report) WriteMarkdown(w io.Writer) error {
 
 	_, err := io.WriteString(w, b.String())
 	return err
+}
+
+// detailsBlock folds the plan and the deployment method into one collapsible
+// section, so a note leads with its verdict and the reason for it instead of
+// with a table the reader has to scroll past to find out why.
+//
+// The blank lines around the tables are load-bearing, not formatting: GitLab
+// renders markdown inside <details> only when it is separated from the tags,
+// and without them the tables arrive as literal pipes.
+//
+// Nothing to show means no section at all. An empty collapsible invites a click
+// that reveals nothing.
+func (r Report) detailsBlock() string {
+	var inner strings.Builder
+	if r.hasChanges() {
+		inner.WriteString(r.verdictTable())
+	}
+	if len(r.Environments) > 0 {
+		inner.WriteString("\nHere is the expected deployment method for this change")
+		inner.WriteString(r.deploymentTable())
+	}
+	if inner.Len() == 0 {
+		return ""
+	}
+
+	return "\n<details>\n<summary>Plan and expected deployment method</summary>\n" +
+		inner.String() + "\n</details>\n"
 }
 
 func (r Report) hasChanges() bool {
@@ -266,6 +377,43 @@ func (r Report) verdictTable() string {
 	return b.String()
 }
 
+// deploymentTable says what the apply will do, per environment.
+//
+// Below the verdict table deliberately. "What does this change contain" and
+// "what will approving it cause" are different questions, and a reviewer
+// reads the first before the second.
+func (r Report) deploymentTable() string {
+	if len(r.Environments) == 0 {
+		return ""
+	}
+
+	var b strings.Builder
+	b.WriteString("\n| Environment | Apply | Why |\n|---|---|---|\n")
+	for _, e := range r.Environments {
+		b.WriteString(fmt.Sprintf("| %s | %s | %s |\n",
+			escapePipes(e.Name),
+			methodMarker(e.Method),
+			escapePipes(strings.Join(e.Reasons, "; "))))
+	}
+	return b.String()
+}
+
+// methodMarker is the symbol for a deployment method.
+//
+// The word is always kept alongside the symbol, for the same reason emoji()
+// keeps it: a symbol alone is lost to a screen reader and to a plain-text copy
+// of the note.
+func methodMarker(m Method) string {
+	switch m {
+	case Auto:
+		return "✅ auto"
+	case Manual:
+		return "✋ manual"
+	default:
+		return "— none"
+	}
+}
+
 // layerBlock lists the policies that judged this run.
 //
 // The repository and directory are spelled out rather than just the layer's
@@ -277,11 +425,18 @@ func (r Report) layerBlock() string {
 		return ""
 	}
 
+	// Named only when the report carries one: a report written by a blastdoor
+	// old enough not to have said should not be attributed to a version.
+	judge := "Judged by"
+	if r.Version != "" {
+		judge += " Blastdoor " + r.Version + " and the following policies"
+	}
+
 	var b strings.Builder
 	if len(r.Layers) > 1 {
-		b.WriteString("\n<sub>Judged by, highest weight first:</sub>\n\n")
+		b.WriteString("\n<sub>" + judge + ", highest weight first:</sub>\n\n")
 	} else {
-		b.WriteString("\n<sub>Judged by:</sub>\n\n")
+		b.WriteString("\n<sub>" + judge + ":</sub>\n\n")
 	}
 
 	for _, l := range r.Layers {
@@ -314,12 +469,15 @@ func (r Report) headline() string {
 func (r Report) verdictSentence(pass, review, deny int) string {
 	switch r.Verdict {
 	case policy.Deny:
-		unjudged := r.unjudgedCount()
-		line := fmt.Sprintf("**Denied** — %d change(s) a policy does not allow.", deny)
-		if unjudged > 0 {
-			line += fmt.Sprintf(" %d of those have no policy at all; write a rule for them, or drop them from this change.", unjudged)
+		// A deny can be forced by something other than a scored change — a
+		// baseline still waiting to be applied. Counting changes then reports
+		// "0 change(s) a policy does not allow", which reads as nothing being
+		// wrong, directly above the list of what is. Same reason Review carries
+		// its own version of this below.
+		if deny == 0 {
+			return "**Denied** — this cannot merge as it stands. Approving does not clear it.\n"
 		}
-		return line + " Approving does not clear this.\n"
+		return fmt.Sprintf("**Denied** — %d change(s) a policy does not allow. Approving does not clear this.\n", deny)
 	case policy.Review:
 		// A review can be forced by paths rather than by scored changes —
 		// a guarded file, or one no plan covers. Counting changes then
@@ -329,7 +487,11 @@ func (r Report) verdictSentence(pass, review, deny int) string {
 		if review == 0 && pass == 0 && deny == 0 {
 			return "**Review required** — a person has to look at this change. Nothing in it was scored.\n"
 		}
-		return fmt.Sprintf("**Review required** — %d change(s) need a person to approve, %d passed.\n", review, pass)
+		line := fmt.Sprintf("**Review required** — %d change(s) need a person to approve, %d passed.", review, pass)
+		if unjudged := r.unjudgedCount(); unjudged > 0 {
+			line += fmt.Sprintf(" %d of those have no policy at all; write a rule for them, or drop them from this change.", unjudged)
+		}
+		return line + "\n"
 	default:
 		return fmt.Sprintf("**Pass** — every one of the %d change(s) is allowed by policy.\n", pass)
 	}

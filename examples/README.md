@@ -13,14 +13,14 @@ per scenario in [plans/](plans/), and every setting blastdoor understands in
 | `no-op.json` | pass | Nothing changes, so nothing needs a rule |
 | `kafka-topic-delete.json` | review | Destroys data — recoverable, but somebody should say so |
 | `kafka-acl-wildcard.json` | **deny** | `User:*` on `*` grants unbounded access |
-| `unmatched-resource.json` | **deny** | No rule matches an `aws_s3_bucket` |
-| `managed-resource-read-lookalike.json` | **deny** | A *managed* resource, so the data-read rule does not apply |
+| `unmatched-resource.json` | review | No rule matches an `aws_s3_bucket` |
+| `managed-resource-read-lookalike.json` | review | A *managed* resource, so the data-read rule does not apply |
 
 The last two are the interesting ones. Nothing matches an `aws_s3_bucket`, so
-it is denied for want of a rule rather than by one. And
+it is sent to review for want of a rule rather than by one. And
 `managed-resource-read-lookalike.json` has the same `["read"]` action as
 `data-source-read.json` but `mode: "managed"` — the allow rule checks both, so
-it does not match, and the change is denied.
+it does not match, and the change goes to review rather than passing.
 
 ## Try it
 

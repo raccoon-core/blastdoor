@@ -74,11 +74,15 @@ func onPath(binary string) bool {
 //
 // Terragrunt drives OpenTofu or Terraform, and getting it wrong means planning
 // a Terraform repository with OpenTofu. The repository says which it wants —
-// through a .terraform-version / .opentofu-version file above the unit, or
-// through its mise config — so ask, rather than assuming.
+// a .terraform-version / .opentofu-version file above the unit, its own
+// .terraform.lock.hcl, or its mise config, in that order — so ask, rather
+// than assuming.
 func TerragruntTF(ctx context.Context, unitDir string, manager Manager) (Tool, string) {
 	if tool, file, ok := PinnedTool(unitDir); ok {
 		return tool, file
+	}
+	if tool, ok := LockedTool(unitDir); ok {
+		return tool, ".terraform.lock.hcl"
 	}
 
 	if manager == ManagerMise {

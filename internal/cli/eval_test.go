@@ -4,6 +4,8 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+
+	"github.com/raccoon-core/blastdoor/internal/baseline"
 )
 
 // A merge request that changes no unit leaves the plan directory empty or
@@ -95,5 +97,105 @@ func TestTrippedGuardsMatching(t *testing.T) {
 				t.Errorf("matchesPath(%q, %q) = %v, want %v", tc.changed, tc.guard, got, tc.want)
 			}
 		})
+	}
+}
+
+// unitWithPlan writes a unit's plan.json under a fresh plan dir and returns
+// both the dir and the planInput pointing at it.
+func unitWithPlan(t *testing.T, unit, planJSON string) (string, planInput) {
+	t.Helper()
+	planDir := t.TempDir()
+	dest := filepath.Join(planDir, unit)
+	if err := os.MkdirAll(dest, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	file := filepath.Join(dest, "plan.json")
+	if err := os.WriteFile(file, []byte(planJSON), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	return dest, planInput{name: unit, file: file}
+}
+
+func TestDirtyBaselinesReportsADirtyUnit(t *testing.T) {
+	dest, p := unitWithPlan(t, "units/prd", planWithACreate)
+	if err := baseline.Write(dest, baseline.Result{
+		Ref: "origin/main", Commit: "2907a68", State: baseline.Dirty,
+		Addresses: []string{`kafka_topic.topics["scp.example.v1"]`},
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	got, err := dirtyBaselines([]planInput{p})
+	if err != nil {
+		t.Fatalf("dirtyBaselines: %v", err)
+	}
+	if len(got) != 1 {
+		t.Fatalf("got %d dirty units, want 1", len(got))
+	}
+	if got[0].Path != "units/prd" || got[0].Missing {
+		t.Errorf("got %+v", got[0])
+	}
+}
+
+func TestDirtyBaselinesIgnoresCleanAndAbsent(t *testing.T) {
+	for _, state := range []baseline.State{baseline.Clean, baseline.Absent} {
+		t.Run(string(state), func(t *testing.T) {
+			dest, p := unitWithPlan(t, "units/int", planWithACreate)
+			if err := baseline.Write(dest, baseline.Result{
+				Ref: "origin/main", Commit: "2907a68", State: state,
+			}); err != nil {
+				t.Fatal(err)
+			}
+
+			got, err := dirtyBaselines([]planInput{p})
+			if err != nil {
+				t.Fatalf("dirtyBaselines: %v", err)
+			}
+			if len(got) != 0 {
+				t.Errorf("got %d dirty units, want 0", len(got))
+			}
+		})
+	}
+}
+
+func TestDirtyBaselinesSkipsUnitsThatApplyNothing(t *testing.T) {
+	// No sidecar written at all — plan skips them, so eval must not then
+	// report them missing. This is the revert case surviving end to end.
+	_, p := unitWithPlan(t, "units/prd", planWithNothingToDo)
+
+	got, err := dirtyBaselines([]planInput{p})
+	if err != nil {
+		t.Fatalf("dirtyBaselines: %v", err)
+	}
+	if len(got) != 0 {
+		t.Errorf("got %d dirty units, want 0", len(got))
+	}
+}
+
+func TestDirtyBaselinesReportsAMissingBaseline(t *testing.T) {
+	// Changes of its own, and no baseline recorded. A missing fact is not a
+	// clean one.
+	_, p := unitWithPlan(t, "units/prd", planWithACreate)
+
+	got, err := dirtyBaselines([]planInput{p})
+	if err != nil {
+		t.Fatalf("dirtyBaselines: %v", err)
+	}
+	if len(got) != 1 {
+		t.Fatalf("got %d dirty units, want 1", len(got))
+	}
+	if !got[0].Missing {
+		t.Errorf("got %+v, want Missing", got[0])
+	}
+}
+
+func TestDirtyBaselinesFailsOnAMalformedSidecar(t *testing.T) {
+	dest, p := unitWithPlan(t, "units/prd", planWithACreate)
+	if err := os.WriteFile(filepath.Join(dest, baseline.FileName), []byte(`{"state":"fine"}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := dirtyBaselines([]planInput{p}); err == nil {
+		t.Fatal("want an error, got nil")
 	}
 }

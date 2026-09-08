@@ -26,7 +26,7 @@ Each layer is fetched at its ref and evaluated on its own. For one change,
 **the highest-weight layer that judged it at all decides it** — a layer that
 says nothing falls through to the next one down, which is what lets a tier add
 rules without restating the ones beneath it. A change no layer judges is still
-denied.
+sent to review.
 
 Weights must be unique: two layers at the same weight have no order between
 them. A remote layer must name a `ref`, and every layer must state a `weight` —
@@ -41,14 +41,22 @@ defaulting it to zero would quietly put a layer at the bottom.
 
 ## What the note records
 
-The note names the layers, the commit each ref resolved to, and which layer
-overrode which:
+The note names the blastdoor that judged the run, the layers, the commit each
+ref resolved to, and which layer overrode which:
 
 ```
-Judged by: local, domain (v1@470da52), company (v1@470da52) — highest weight first.
-
 | ✅ pass | … | `kafka_acl.a` (create) | local: approved by exception (local overrides: company said deny) |
+
+Judged by Blastdoor 1.0.0 and the following policies, highest weight first:
+
+- **local** — this repository, `policy`
+- **company** — `rules/company` in `https://git.example.com/policies` at `v1` (`470da52`)
 ```
+
+The version is in the JSON report too, as `blastdoor_version`. An unreleased
+build has no version to state, so it names its commit instead — `dev (f53ee54)`,
+or `dev (f53ee54, modified)` when the tree it was built from had uncommitted
+changes.
 
 A source that cannot be fetched fails the command. Evaluating with the layers
 that did arrive would drop a company layer's `deny` rules the moment its host

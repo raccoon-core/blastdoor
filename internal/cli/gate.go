@@ -139,6 +139,16 @@ must not be mistaken for a change that needs no gate.`,
 					// A denial is not something an approval settles. Fail the
 					// job so the pipeline is red too, and the change has to
 					// alter either the plan or the policy.
+					//
+					// The count can be a scored deny, a baseline deny, or both,
+					// and a baseline deny scores zero changes — see
+					// report.verdictSentence's identical special case. Printing
+					// "0 change(s)" here would read as nothing being wrong, on
+					// the line an operator reads first.
+					if rep.Counts[policy.Deny] == 0 && len(rep.Baseline) > 0 {
+						fmt.Fprintf(out, "denied: the branch this targets has changes waiting to be applied — !%d blocked\n", iid)
+						return fmt.Errorf("denied by policy: the branch this targets has changes waiting to be applied")
+					}
 					fmt.Fprintf(out, "denied: %d change(s) no policy allows — !%d blocked\n", rep.Counts[policy.Deny], iid)
 					return fmt.Errorf("denied by policy: %d change(s) not allowed", rep.Counts[policy.Deny])
 				}

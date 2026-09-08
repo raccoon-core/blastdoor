@@ -25,3 +25,13 @@ every environment under it.
     unit, is planned by nothing, and is judged by nothing. `--require-coverage`
     turns that into a `review` rather than letting it through unseen. See
     [`.blastdoor.yml`](configuration.md).
+
+## Baseline drift
+
+- `--baseline-ref` (`plan`) — plan each changed unit against this ref as well,
+  and record what is still waiting to be applied there. Use the tip of the
+  branch the change targets, `origin/main` for most repositories. Off when
+  empty. Costs a second plan per unit that has changes.
+- `--require-clean-baseline` (`eval`) — deny when a changed unit's baseline
+  still has changes waiting to be applied. Needs `blastdoor plan --baseline-ref`
+  to have run; a unit with changes and no baseline recorded denies too.
