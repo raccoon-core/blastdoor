@@ -3,6 +3,7 @@ package policy
 import (
 	"context"
 	"os"
+	"slices"
 	"testing"
 )
 
@@ -426,5 +427,136 @@ func TestWorse(t *testing.T) {
 		if got := Worse(tc.a, tc.b); got != tc.want {
 			t.Errorf("Worse(%q, %q) = %q, want %q", tc.a, tc.b, got, tc.want)
 		}
+	}
+}
+
+func TestApplicableAddresses(t *testing.T) {
+	tests := []struct {
+		name string
+		plan string
+		want []string
+	}{
+		{
+			name: "a create applies something",
+			plan: `{"format_version":"1.2","resource_changes":[
+				{"address":"kafka_topic.a","mode":"managed","type":"kafka_topic",
+				 "change":{"actions":["create"]}}]}`,
+			want: []string{"kafka_topic.a"},
+		},
+		{
+			name: "a no-op applies nothing",
+			plan: `{"format_version":"1.2","resource_changes":[
+				{"address":"kafka_topic.a","mode":"managed","type":"kafka_topic",
+				 "change":{"actions":["no-op"]}}]}`,
+			want: nil,
+		},
+		{
+			name: "reading a data source applies nothing",
+			plan: `{"format_version":"1.2","resource_changes":[
+				{"address":"data.vault_generic_secret.a","mode":"data","type":"vault_generic_secret",
+				 "change":{"actions":["read"]}}]}`,
+			want: nil,
+		},
+		{
+			// The distinction examples/plans/managed-resource-read-lookalike.json
+			// exists to defend. A managed resource being read is not a data
+			// lookup, and a unit whose only pending change is one must not skip
+			// its baseline.
+			name: "reading a managed resource applies something",
+			plan: `{"format_version":"1.2","resource_changes":[
+				{"address":"kafka_topic.sneaky","mode":"managed","type":"kafka_topic",
+				 "change":{"actions":["read"]}}]}`,
+			want: []string{"kafka_topic.sneaky"},
+		},
+		{
+			name: "a replace applies something",
+			plan: `{"format_version":"1.2","resource_changes":[
+				{"address":"kafka_topic.a","mode":"managed","type":"kafka_topic",
+				 "change":{"actions":["delete","create"]}}]}`,
+			want: []string{"kafka_topic.a"},
+		},
+		{
+			name: "an unrecognised action applies something",
+			plan: `{"format_version":"1.2","resource_changes":[
+				{"address":"kafka_topic.a","mode":"managed","type":"kafka_topic",
+				 "change":{"actions":["forget"]}}]}`,
+			want: []string{"kafka_topic.a"},
+		},
+		{
+			name: "addresses come back sorted",
+			plan: `{"format_version":"1.2","resource_changes":[
+				{"address":"kafka_topic.z","mode":"managed","type":"kafka_topic",
+				 "change":{"actions":["create"]}},
+				{"address":"kafka_topic.a","mode":"managed","type":"kafka_topic",
+				 "change":{"actions":["update"]}}]}`,
+			want: []string{"kafka_topic.a", "kafka_topic.z"},
+		},
+		{
+			name: "an empty plan applies nothing",
+			plan: `{"format_version":"1.2","resource_changes":[]}`,
+			want: nil,
+		},
+		{
+			// isApplicable's doc comment: everything but the two named
+			// inapplicable shapes is applicable. A malformed actions array is
+			// neither of those two shapes, so fail closed rather than reading
+			// it as "nothing to do".
+			name: "an empty actions array applies something",
+			plan: `{"format_version":"1.2","resource_changes":[
+				{"address":"kafka_topic.a","mode":"managed","type":"kafka_topic",
+				 "change":{"actions":[]}}]}`,
+			want: []string{"kafka_topic.a"},
+		},
+		{
+			name: "a missing change.actions applies something",
+			plan: `{"format_version":"1.2","resource_changes":[
+				{"address":"kafka_topic.a","mode":"managed","type":"kafka_topic",
+				 "change":{}}]}`,
+			want: []string{"kafka_topic.a"},
+		},
+		{
+			// actions() drops non-string elements, so a single non-string
+			// entry collapses the array to zero recognised actions — the same
+			// shape as a missing or empty array, and it must fail closed the
+			// same way.
+			name: "a non-string action applies something",
+			plan: `{"format_version":"1.2","resource_changes":[
+				{"address":"kafka_topic.a","mode":"managed","type":"kafka_topic",
+				 "change":{"actions":[42]}}]}`,
+			want: []string{"kafka_topic.a"},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, err := ApplicableAddresses([]byte(tt.plan))
+			if err != nil {
+				t.Fatalf("ApplicableAddresses: %v", err)
+			}
+			if !slices.Equal(got, tt.want) {
+				t.Errorf("got %v, want %v", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestApplicableAddressesRejectsNonPlans(t *testing.T) {
+	tests := []struct {
+		name string
+		raw  string
+	}{
+		{"truncated JSON", `{"resource_changes":[`},
+		{"state output", `{"values":{"root_module":{}}}`},
+		{"an error message", `not json at all`},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			// Failing to read a plan must never come back looking like a plan
+			// that applies nothing — that is a clean baseline for free.
+			if _, err := ApplicableAddresses([]byte(tt.raw)); err == nil {
+				t.Fatal("want an error, got nil")
+			}
+		})
 	}
 }

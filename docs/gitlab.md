@@ -62,6 +62,25 @@ says so and does nothing, so the earlier jobs still report on every push.
 See [ci/gitlab/blastdoor.yml](https://github.com/raccoon-core/blastdoor/blob/main/ci/gitlab/blastdoor.yml)
 for the variables.
 
+## Baseline drift
+
+`BLASTDOOR_BASELINE_ENABLED` — deny when the target branch has changes waiting
+to be applied to a unit this change touches. On by default. Set to `""` to
+turn it off, for a repository with a unit that is permanently dirty. Costs a
+second plan per changed unit, in the `blastdoor:plan` job.
+
+See [Verdicts](verdicts.md) for why this denies rather than reviews.
+
+`blastdoor:eval` passes `--require-clean-baseline` whenever the variable is
+non-empty, whether or not `blastdoor:plan` actually wrote the sidecars it
+reads. A project that overrides `blastdoor:plan` — see the `int`/`stg`/`prd`
+`parallel:matrix` setup below — carries its own `script:`, without this
+file's `--baseline-ref` line. A unit with no sidecar reads as an unknown,
+unproven-clean baseline and denies. Re-add `--baseline-ref` (resolved the same
+way: the target branch tip, falling back to the default branch, skipped on the
+default branch itself) to that project's own `blastdoor plan` invocation, or
+set `BLASTDOOR_BASELINE_ENABLED: ""` until it does.
+
 ## The deployment method
 
 `eval` can also answer a second question, per environment: may this be applied

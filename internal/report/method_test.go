@@ -176,6 +176,23 @@ func TestDecideGuardsForceManualEverywhere(t *testing.T) {
 	}
 }
 
+// The bug this guards: RequireCleanBaseline sets r.Verdict and r.Baseline but
+// never touches a Unit.Verdict, so a dirty baseline is invisible to the
+// per-unit fold Decide runs. Without naming it in the wide slice too, an
+// environment whose units all pass an auto-vouching rule resolves to Auto on
+// a report whose own verdict is deny.
+func TestDecideDirtyBaselineForcesManualEvenWhenPolicyAuto(t *testing.T) {
+	rep := Build([]Unit{autoUnit("ops/prd/a", "prd", "prd")})
+	rep.RequireCleanBaseline([]BaselineUnit{{Path: "ops/prd/a", Missing: true}})
+	w, _ := ParseWish("prd=auto")
+	if err := rep.Decide(w); err != nil {
+		t.Fatalf("Decide: %v", err)
+	}
+	if got := methodFor(t, rep, "prd"); got != Manual {
+		t.Errorf("prd = %q, want manual: the report's own verdict is deny from a dirty baseline", got)
+	}
+}
+
 func TestDecideUncoveredFilesForceManualEverywhere(t *testing.T) {
 	rep := Build([]Unit{unit("ops/int/a", "int", policy.Pass)})
 	rep.RequireCoverage([]string{"topics.yaml"})

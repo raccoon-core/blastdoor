@@ -34,6 +34,10 @@ type Report struct {
 	Guarded []string `json:"guarded,omitempty"`
 	// Uncovered lists changed files that no plan accounts for.
 	Uncovered []string `json:"uncovered,omitempty"`
+	// Baseline lists units whose target branch still has changes waiting to be
+	// applied. Such a change rides along inside this merge request's plan and
+	// its apply, having appeared in nobody's diff.
+	Baseline []BaselineUnit `json:"baseline,omitempty"`
 	// Version is the blastdoor that produced this report. Policies move, and
 	// so does the binary reading them: a verdict cannot be explained later
 	// without knowing which one judged it. Empty when nothing recorded it.
@@ -62,6 +66,22 @@ type Layer struct {
 	Ref        string `json:"ref,omitempty"`
 	Commit     string `json:"commit,omitempty"`
 	Weight     int    `json:"weight"`
+}
+
+// BaselineUnit is one unit whose target branch still has changes waiting to be
+// applied.
+type BaselineUnit struct {
+	Path string `json:"path"`
+	// Ref and Commit are the baseline that was planned. The commit matters:
+	// a ref moves, and a verdict cannot be explained afterwards without it.
+	Ref    string `json:"ref,omitempty"`
+	Commit string `json:"commit,omitempty"`
+	// Addresses are what is pending there.
+	Addresses []string `json:"addresses,omitempty"`
+	// Missing says the unit has changes of its own but recorded no baseline at
+	// all. Not the same fact as a dirty baseline, and it denies for a different
+	// reason: nobody knows what is pending, which is not the same as nothing.
+	Missing bool `json:"missing,omitempty"`
 }
 
 // overrideNote says which lower layers were overruled, and to what.
@@ -190,6 +210,25 @@ func (r *Report) RequireCoverage(paths []string) {
 	r.Verdict = policy.Worse(r.Verdict, policy.Review)
 }
 
+// RequireCleanBaseline denies, recording the units whose target branch still
+// has changes waiting to be applied.
+//
+// Deny rather than review, and the asymmetry is the whole point. A reviewer
+// approving this merge request does nothing about a change that merged days ago
+// and was never applied — the plan has to change, by applying or reverting on
+// the target branch. That is what deny means here and in gate: approving alone
+// does not settle it.
+//
+// Like RequireReview and RequireCoverage, it never softens a verdict.
+func (r *Report) RequireCleanBaseline(dirty []BaselineUnit) {
+	if len(dirty) == 0 {
+		return
+	}
+	r.Baseline = append(r.Baseline, dirty...)
+	sort.Slice(r.Baseline, func(i, j int) bool { return r.Baseline[i].Path < r.Baseline[j].Path })
+	r.Verdict = policy.Worse(r.Verdict, policy.Deny)
+}
+
 // WriteJSON writes the machine-readable report.
 func (r Report) WriteJSON(w io.Writer) error {
 	enc := json.NewEncoder(w)
@@ -239,6 +278,25 @@ func (r Report) WriteMarkdown(w io.Writer) error {
 		}
 	}
 
+	if len(r.Baseline) > 0 {
+		b.WriteString("\nThe branch this targets has changes that have not been applied yet. " +
+			"They are in this plan but in nobody's diff, so approving this would apply them too. " +
+			"Apply or revert them on the target branch first:\n\n")
+		for _, u := range r.Baseline {
+			if u.Missing {
+				b.WriteString(fmt.Sprintf("- `%s` — no baseline was recorded, so what is pending there is unknown\n",
+					escapePipes(u.Path)))
+				continue
+			}
+			addresses := make([]string, 0, len(u.Addresses))
+			for _, a := range u.Addresses {
+				addresses = append(addresses, "`"+escapePipes(a)+"`")
+			}
+			b.WriteString(fmt.Sprintf("- `%s` — %s (at `%.7s`)\n",
+				escapePipes(u.Path), strings.Join(addresses, ", "), u.Commit))
+		}
+	}
+
 	switch {
 	// Zero units is also what a misconfigured root or a failed detection
 	// looks like, so say it rather than letting it read as approval.
@@ -246,12 +304,9 @@ func (r Report) WriteMarkdown(w io.Writer) error {
 		b.WriteString("\nNo units were scored, so nothing here has been checked.\n")
 	case !r.hasChanges():
 		b.WriteString(fmt.Sprintf("\nNo changes across %d unit(s).\n", r.UnitCount))
-	default:
-		b.WriteString(r.verdictTable())
 	}
 
-	b.WriteString("\nHere is the expected deployment method for this change")
-	b.WriteString(r.deploymentTable())
+	b.WriteString(r.detailsBlock())
 
 	// Last, deliberately. Which policies judged the change is what a reader
 	// goes looking for after reading the verdict, not before — it answers a
@@ -260,6 +315,33 @@ func (r Report) WriteMarkdown(w io.Writer) error {
 
 	_, err := io.WriteString(w, b.String())
 	return err
+}
+
+// detailsBlock folds the plan and the deployment method into one collapsible
+// section, so a note leads with its verdict and the reason for it instead of
+// with a table the reader has to scroll past to find out why.
+//
+// The blank lines around the tables are load-bearing, not formatting: GitLab
+// renders markdown inside <details> only when it is separated from the tags,
+// and without them the tables arrive as literal pipes.
+//
+// Nothing to show means no section at all. An empty collapsible invites a click
+// that reveals nothing.
+func (r Report) detailsBlock() string {
+	var inner strings.Builder
+	if r.hasChanges() {
+		inner.WriteString(r.verdictTable())
+	}
+	if len(r.Environments) > 0 {
+		inner.WriteString("\nHere is the expected deployment method for this change")
+		inner.WriteString(r.deploymentTable())
+	}
+	if inner.Len() == 0 {
+		return ""
+	}
+
+	return "\n<details>\n<summary>Plan and expected deployment method</summary>\n" +
+		inner.String() + "\n</details>\n"
 }
 
 func (r Report) hasChanges() bool {
@@ -387,6 +469,14 @@ func (r Report) headline() string {
 func (r Report) verdictSentence(pass, review, deny int) string {
 	switch r.Verdict {
 	case policy.Deny:
+		// A deny can be forced by something other than a scored change — a
+		// baseline still waiting to be applied. Counting changes then reports
+		// "0 change(s) a policy does not allow", which reads as nothing being
+		// wrong, directly above the list of what is. Same reason Review carries
+		// its own version of this below.
+		if deny == 0 {
+			return "**Denied** — this cannot merge as it stands. Approving does not clear it.\n"
+		}
 		return fmt.Sprintf("**Denied** — %d change(s) a policy does not allow. Approving does not clear this.\n", deny)
 	case policy.Review:
 		// A review can be forced by paths rather than by scored changes —

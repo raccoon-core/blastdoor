@@ -198,6 +198,45 @@ The diff uses three dots (`base...head`) so work that landed on the default
 branch after the fork is not attributed to this change. Do not "simplify" it to
 two dots.
 
+### The baseline ref is the target branch tip, and the base ref is not
+
+`detect.ResolveBaseRef` resolves a **merge base** and diffs with three dots, so
+work that landed on the default branch after the fork is not attributed to this
+change. That is right for "which units does this branch touch".
+
+`blastdoor plan --baseline-ref` resolves the **tip** of the branch being
+targeted, and this disagreement is deliberate. It asks a different question:
+what is pending if this merge request does not exist. A branch that is behind
+its target has a merge base predating an unapplied backlog, so a merge-base
+baseline comes back clean while the backlog is still waiting — which is the
+exact failure the flag exists to catch.
+
+Same-sounding flags, opposite correct answers. Do not "fix" one to match the
+other.
+
+### A dirty baseline denies, and only for units with changes of their own
+
+A plan is desired state against live state, not "what this merge request
+changed". A change merged but never applied therefore turns up in the plan of
+the next merge request that touches that unit, and in the apply that follows its
+approval, having appeared in nobody's diff. `Report.RequireCleanBaseline` denies
+on that.
+
+**Deny, not review.** Approving does nothing about a backlog; only applying or
+reverting on the target branch does. Same asymmetry as everywhere else here.
+
+**Only units whose own plan applies something.** This is not an optimisation.
+Out-of-band drift is sometimes fixed by codifying the drifted value, and that
+merge request touches the dirty unit — under an unscoped rule it would be denied
+too, and the only exit would be applying the target branch and reverting the
+change you meant to keep. Scoped, such a merge request has an empty head plan,
+needs no baseline, and merges. That is why there is no override variable and no
+accept-list: do not add one, and do not "simplify" the scope away, because the
+scope *is* the escape hatch.
+
+A unit with changes of its own and no baseline recorded denies as well. A fact
+nobody could read is not a clean one.
+
 ### mise runs with MISE_SAFE=1
 
 A repository's `mise.toml` can execute code during version resolution — hooks,

@@ -758,3 +758,61 @@ func isNoOp(rc map[string]any) bool {
 	acts := actions(rc)
 	return len(acts) == 1 && acts[0] == "no-op"
 }
+
+// ApplicableAddresses lists the addresses of the resource changes in a plan
+// that would actually do something if applied, sorted.
+//
+// An empty result means the plan applies nothing, which is what "this unit has
+// no changes" means everywhere it is asked. Reading the plan is part of the
+// answer: a truncated file or an error message must never come back as a plan
+// with nothing in it, so the same ValidatePlan that guards eval guards this.
+func ApplicableAddresses(raw []byte) ([]string, error) {
+	var decoded any
+	if err := json.Unmarshal(raw, &decoded); err != nil {
+		return nil, fmt.Errorf("parsing plan JSON: %w", err)
+	}
+	if err := ValidatePlan(decoded); err != nil {
+		return nil, err
+	}
+
+	var out []string
+	for _, rc := range resourceChanges(decoded) {
+		if isApplicable(rc) {
+			out = append(out, stringField(rc, "address"))
+		}
+	}
+	sort.Strings(out)
+	return out, nil
+}
+
+// isApplicable reports whether one resource change would do anything.
+//
+// Two actions do nothing. ["no-op"] is nothing by definition. ["read"] is
+// nothing too — but only on a data source: the same action on a managed
+// resource is not a data lookup, and the repository already treats those
+// differently on purpose (examples/plans/managed-resource-read-lookalike.json
+// gets review where examples/plans/data-source-read.json passes). Filtering
+// every read here would let a unit whose only pending change is a managed
+// read skip its baseline check entirely.
+//
+// Everything else is applicable, including an action this does not recognise.
+// A new Terraform action must read as "something happens", not as silence.
+func isApplicable(rc map[string]any) bool {
+	acts := actions(rc)
+	// Neither inapplicable shape is reachable except through exactly one
+	// recognised string action, so a missing, empty, or non-string actions
+	// array — actions() drops anything that is not a string, which can
+	// collapse a non-empty array down to zero entries — is applicable, not
+	// exempt. Returning len(acts) > 0 here read "nothing to see" for the
+	// zero-length case instead, which is the opposite of fail closed.
+	if len(acts) != 1 {
+		return true
+	}
+	switch acts[0] {
+	case "no-op":
+		return false
+	case "read":
+		return stringField(rc, "mode") != "data"
+	}
+	return true
+}
