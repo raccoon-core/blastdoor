@@ -413,3 +413,68 @@ func TestDenyHeadlineWithNoDeniedChanges(t *testing.T) {
 		t.Errorf("headline does not say Denied:\n%s", b.String())
 	}
 }
+
+func TestWriteMarkdownCollapsesTheTables(t *testing.T) {
+	rep := decided(t, "int=auto,prd=manual", []Unit{
+		{Path: "ops/int/a", Environment: "int", Changes: []policy.Change{autoChange("x", "int")}},
+	})
+	rep.Version = "1.2.3"
+	rep.Layers = []Layer{{Name: "operations", Repository: "https://example.invalid/policies.git", Directory: "policies", Ref: "main", Commit: "de159dd0"}}
+
+	var b strings.Builder
+	if err := rep.WriteMarkdown(&b); err != nil {
+		t.Fatalf("WriteMarkdown: %v", err)
+	}
+	got := b.String()
+
+	if !strings.Contains(got, "<summary>Plan and expected deployment method</summary>") {
+		t.Fatalf("no details summary:\n%s", got)
+	}
+
+	// GitLab renders markdown inside <details> only when a blank line separates
+	// it from the tags. Without these the tables come out as literal pipes.
+	if !strings.Contains(got, "</summary>\n\n") {
+		t.Error("no blank line after </summary>, so the tables will not render")
+	}
+	if !strings.Contains(got, "\n\n</details>") {
+		t.Error("no blank line before </details>, so the tables will not render")
+	}
+
+	open, close := strings.Index(got, "<details>"), strings.Index(got, "</details>")
+	inside := func(needle string) bool {
+		i := strings.Index(got, needle)
+		return i > open && i < close
+	}
+	for _, want := range []string{"| Verdict | Unit | Change | Why |", "| Environment | Apply | Why |", "expected deployment method for this change"} {
+		if !inside(want) {
+			t.Errorf("%q is not inside the collapsible section:\n%s", want, got)
+		}
+	}
+
+	// The decision stays visible above the fold; the provenance sits below it.
+	if i := strings.Index(got, "**Pass**"); i < 0 || i > open {
+		t.Error("the verdict headline must stay above the collapsible section")
+	}
+	if i := strings.Index(got, "Judged by"); i < close {
+		t.Error("the judged-by block must sit below the collapsible section")
+	}
+}
+
+func TestWriteMarkdownWithNothingToShowEmitsNoDetails(t *testing.T) {
+	// An empty collapsible is worse than none: it invites a click that reveals
+	// nothing. The "nothing was checked" warning itself stays visible.
+	var rep Report
+
+	var b strings.Builder
+	if err := rep.WriteMarkdown(&b); err != nil {
+		t.Fatalf("WriteMarkdown: %v", err)
+	}
+	got := b.String()
+
+	if strings.Contains(got, "<details>") {
+		t.Errorf("emitted an empty collapsible section:\n%s", got)
+	}
+	if !strings.Contains(got, "No units were scored") {
+		t.Errorf("the no-units warning must stay visible:\n%s", got)
+	}
+}

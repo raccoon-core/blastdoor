@@ -304,12 +304,9 @@ func (r Report) WriteMarkdown(w io.Writer) error {
 		b.WriteString("\nNo units were scored, so nothing here has been checked.\n")
 	case !r.hasChanges():
 		b.WriteString(fmt.Sprintf("\nNo changes across %d unit(s).\n", r.UnitCount))
-	default:
-		b.WriteString(r.verdictTable())
 	}
 
-	b.WriteString("\nHere is the expected deployment method for this change")
-	b.WriteString(r.deploymentTable())
+	b.WriteString(r.detailsBlock())
 
 	// Last, deliberately. Which policies judged the change is what a reader
 	// goes looking for after reading the verdict, not before — it answers a
@@ -318,6 +315,33 @@ func (r Report) WriteMarkdown(w io.Writer) error {
 
 	_, err := io.WriteString(w, b.String())
 	return err
+}
+
+// detailsBlock folds the plan and the deployment method into one collapsible
+// section, so a note leads with its verdict and the reason for it instead of
+// with a table the reader has to scroll past to find out why.
+//
+// The blank lines around the tables are load-bearing, not formatting: GitLab
+// renders markdown inside <details> only when it is separated from the tags,
+// and without them the tables arrive as literal pipes.
+//
+// Nothing to show means no section at all. An empty collapsible invites a click
+// that reveals nothing.
+func (r Report) detailsBlock() string {
+	var inner strings.Builder
+	if r.hasChanges() {
+		inner.WriteString(r.verdictTable())
+	}
+	if len(r.Environments) > 0 {
+		inner.WriteString("\nHere is the expected deployment method for this change")
+		inner.WriteString(r.deploymentTable())
+	}
+	if inner.Len() == 0 {
+		return ""
+	}
+
+	return "\n<details>\n<summary>Plan and expected deployment method</summary>\n" +
+		inner.String() + "\n</details>\n"
 }
 
 func (r Report) hasChanges() bool {
