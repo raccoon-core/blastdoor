@@ -53,6 +53,57 @@ func TestWriteApplyYAMLCarriesALiteralWhen(t *testing.T) {
 	}
 }
 
+// Each environment gets its own stage, in the canonical int -> stg -> prd
+// order, so GitLab serialises them: stg does not start until int's stage
+// (including a manual job sitting unstarted) finishes.
+func TestWriteApplyYAMLGivesEachEnvironmentItsOwnStageInOrder(t *testing.T) {
+	rep := decided(t, "int=auto,stg=manual,prd=manual", []Unit{
+		{Path: "ops/int/a", Environment: "int", Changes: []policy.Change{autoChange("x", "int")}},
+		{Path: "ops/stg/a", Environment: "stg", Changes: []policy.Change{change("y", policy.Pass, "fine")}},
+		{Path: "ops/prd/a", Environment: "prd", Changes: []policy.Change{change("z", policy.Pass, "fine")}},
+	})
+
+	text, doc := applyYAML(t, rep)
+
+	if got := job(t, doc, "apply:int")["stage"]; got != "int" {
+		t.Errorf("apply:int stage = %v, want int", got)
+	}
+	if got := job(t, doc, "apply:stg")["stage"]; got != "stg" {
+		t.Errorf("apply:stg stage = %v, want stg", got)
+	}
+	if got := job(t, doc, "apply:prd")["stage"]; got != "prd" {
+		t.Errorf("apply:prd stage = %v, want prd", got)
+	}
+
+	stages, ok := doc["stages"].([]any)
+	if !ok {
+		t.Fatalf("stages = %v, want a list:\n%s", doc["stages"], text)
+	}
+	want := []any{"int", "stg", "prd"}
+	if len(stages) != len(want) {
+		t.Fatalf("stages = %v, want %v", stages, want)
+	}
+	for i, s := range want {
+		if stages[i] != s {
+			t.Errorf("stages[%d] = %v, want %v", i, stages[i], s)
+		}
+	}
+}
+
+// An environment name outside the canonical order has no stage to run in, so
+// generation fails loudly rather than silently misordering or dropping it.
+func TestWriteApplyYAMLRejectsAnEnvironmentOutsideTheCanonicalOrder(t *testing.T) {
+	rep := decided(t, "sandbox=auto", []Unit{
+		{Path: "ops/sandbox/a", Environment: "sandbox", Changes: []policy.Change{autoChange("x", "sandbox")}},
+	})
+
+	var b strings.Builder
+	err := rep.WriteApplyYAML(&b, ApplyInclude{File: ".gitlab/blastdoor-apply.yml"})
+	if err == nil {
+		t.Fatalf("WriteApplyYAML: want an error for environment %q, got nil, generated:\n%s", "sandbox", b.String())
+	}
+}
+
 // Nothing to apply, so no job: an empty one would run the repository's apply
 // script against no units.
 func TestWriteApplyYAMLSkipsEnvironmentsWithNothingToApply(t *testing.T) {

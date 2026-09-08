@@ -3,8 +3,14 @@ package report
 import (
 	"fmt"
 	"io"
+	"slices"
 	"strings"
 )
+
+// applyStageOrder fixes the sequence environments apply in: each gets its own
+// stage, and GitLab's stage boundary makes int finish (including sitting at a
+// manual job) before stg starts, and stg before prd.
+var applyStageOrder = []string{"int", "stg", "prd"}
 
 // ApplyInclude names where the generated pipeline finds .blastdoor:apply.
 // File alone is a `local:` include (the repository's own file, the original
@@ -61,6 +67,13 @@ func (r Report) WriteApplyYAML(w io.Writer, include ApplyInclude) error {
 			continue
 		}
 
+		// Environments apply in this fixed order (stage per environment, one
+		// applying before the next starts) — a name outside it has nowhere
+		// to go, so this fails loudly rather than silently misordering.
+		if !slices.Contains(applyStageOrder, e.Name) {
+			return fmt.Errorf("environment %q is not part of the canonical apply order %v", e.Name, applyStageOrder)
+		}
+
 		// Exhaustive, with no default falling through to on_success: a
 		// future fourth Method must name its own when: explicitly, rather
 		// than silently becoming an unattended apply because nothing here
@@ -77,8 +90,8 @@ func (r Report) WriteApplyYAML(w io.Writer, include ApplyInclude) error {
 
 		any = true
 		fmt.Fprintf(&jobs,
-			"\napply:%s:\n  extends: .blastdoor:apply\n  when: %s\n  variables:\n    BLASTDOOR_ENV: %s\n",
-			e.Name, when, yamlString(e.Name))
+			"\napply:%s:\n  extends: .blastdoor:apply\n  stage: %s\n  when: %s\n  variables:\n    BLASTDOOR_ENV: %s\n",
+			e.Name, e.Name, when, yamlString(e.Name))
 	}
 
 	var b strings.Builder
@@ -95,6 +108,10 @@ func (r Report) WriteApplyYAML(w io.Writer, include ApplyInclude) error {
 		return err
 	}
 
+	b.WriteString("stages:\n")
+	for _, s := range applyStageOrder {
+		b.WriteString("  - " + s + "\n")
+	}
 	b.WriteString(include.includeYAML())
 	b.WriteString(jobs.String())
 
