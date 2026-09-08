@@ -36,10 +36,11 @@ func newEvalCmd() *cobra.Command {
 		root                 string
 		requireCleanBaseline bool
 
-		wishFlag            string
-		applyInclude        string
-		applyIncludeProject string
-		applyIncludeRef     string
+		wishFlag                 string
+		applyInclude             string
+		applyIncludeProject      string
+		applyIncludeRef          string
+		applyIncludeVaultSecrets string
 	)
 
 	cmd := &cobra.Command{
@@ -198,7 +199,7 @@ or --plan-dir at the tree 'blastdoor plan' produced, to judge a whole change.`,
 				return err
 			}
 
-			include := report.ApplyInclude{File: applyInclude, Project: applyIncludeProject, Ref: applyIncludeRef}
+			include := report.ApplyInclude{File: applyInclude, Project: applyIncludeProject, Ref: applyIncludeRef, VaultSecretsFile: applyIncludeVaultSecrets}
 			if err := writeReport(rep, outDir, include); err != nil {
 				return err
 			}
@@ -255,6 +256,8 @@ or --plan-dir at the tree 'blastdoor plan' produced, to judge a whole change.`,
 		"project the .blastdoor:apply file lives in, if not this repository (switches --apply-include to a project: include)")
 	cmd.Flags().StringVar(&applyIncludeRef, "apply-include-ref", "",
 		"ref to use with --apply-include-project")
+	cmd.Flags().StringVar(&applyIncludeVaultSecrets, "apply-include-vault-secrets", "",
+		"second file, from the same --apply-include-project/--apply-include-ref, included alongside --apply-include for templates .blastdoor:apply extends (e.g. a .vault-secrets definition)")
 
 	return cmd
 }

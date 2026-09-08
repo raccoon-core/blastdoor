@@ -20,18 +20,34 @@ type ApplyInclude struct {
 	File    string
 	Project string
 	Ref     string
+	// VaultSecretsFile, when set, is included alongside File, from the same
+	// Project/Ref. The generated child pipeline resolves its own include
+	// list independently of the parent pipeline's — a template like
+	// .vault-secrets that .blastdoor:apply extends is invisible here unless
+	// its file is named explicitly, even when the parent's merged config
+	// already shows it in scope.
+	VaultSecretsFile string
 }
 
 func (i ApplyInclude) includeYAML() string {
-	if i.Project == "" {
-		return "include:\n  - local: " + yamlString(i.File) + "\n"
+	entry := func(file string) string {
+		if i.Project == "" {
+			return "  - local: " + yamlString(file) + "\n"
+		}
+		var b strings.Builder
+		b.WriteString("  - project: " + yamlString(i.Project) + "\n")
+		if i.Ref != "" {
+			b.WriteString("    ref: " + yamlString(i.Ref) + "\n")
+		}
+		b.WriteString("    file: " + yamlString(file) + "\n")
+		return b.String()
 	}
 	var b strings.Builder
-	b.WriteString("include:\n  - project: " + yamlString(i.Project) + "\n")
-	if i.Ref != "" {
-		b.WriteString("    ref: " + yamlString(i.Ref) + "\n")
+	b.WriteString("include:\n")
+	b.WriteString(entry(i.File))
+	if i.VaultSecretsFile != "" {
+		b.WriteString(entry(i.VaultSecretsFile))
 	}
-	b.WriteString("    file: " + yamlString(i.File) + "\n")
 	return b.String()
 }
 
