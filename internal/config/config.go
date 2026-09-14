@@ -126,6 +126,13 @@ type Config struct {
 	Manager          string `yaml:"manager"`
 	TerragruntTFPath string `yaml:"terragrunt_tf_path"`
 
+	// GitlabSections wraps each unit's 'plan'/'prepare' output in a
+	// collapsible GitLab CI section — collapsed on success, expanded on
+	// failure — instead of streaming it straight to the job log. On by
+	// default under GitLab CI ($GITLAB_CI=true); set this to override that
+	// auto-detection.
+	GitlabSections *bool `yaml:"gitlab_sections"`
+
 	// Policies are the tiers of policy this repository is judged by, keyed
 	// by the name that appears in the report. Higher weight wins.
 	Policies map[string]Source `yaml:"policies"`
