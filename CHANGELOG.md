@@ -1,3 +1,10 @@
+# [1.2.0](https://github.com/raccoon-core/blastdoor/compare/v1.1.2...v1.2.0) (2026-09-14)
+
+
+### Features
+
+* handle gitlab logging with sections ([8d51ccc](https://github.com/raccoon-core/blastdoor/commit/8d51ccc6ffb63854ade41a0eb46da4e748c4dc5a))
+
 ## [1.1.2](https://github.com/raccoon-core/blastdoor/compare/v1.1.1...v1.1.2) (2026-09-08)
 
 
