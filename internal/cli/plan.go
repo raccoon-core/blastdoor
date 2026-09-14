@@ -2,6 +2,7 @@ package cli
 
 import (
 	"bufio"
+	"bytes"
 	"context"
 	"fmt"
 	"os"
@@ -12,22 +13,24 @@ import (
 	"github.com/raccoon-core/blastdoor/internal/detect"
 	"github.com/raccoon-core/blastdoor/internal/policy"
 	"github.com/raccoon-core/blastdoor/internal/runner"
+	"github.com/raccoon-core/blastdoor/internal/section"
 	"github.com/spf13/cobra"
 )
 
 func newPlanCmd() *cobra.Command {
 	var (
-		units       []string
-		unitsFile   string
-		root        string
-		baseRef     string
-		headRef     string
-		outDir      string
-		tool        string
-		tgTFPath    string
-		manager     string
-		environment string
-		baselineRef string
+		units          []string
+		unitsFile      string
+		root           string
+		baseRef        string
+		headRef        string
+		outDir         string
+		tool           string
+		tgTFPath       string
+		manager        string
+		environment    string
+		baselineRef    string
+		gitlabSections bool
 	)
 
 	cmd := &cobra.Command{
@@ -45,6 +48,7 @@ in each unit.`,
 			tool = pickString(cmd, "tool", tool, cfg().Tool)
 			manager = pickString(cmd, "manager", manager, cfg().Manager)
 			tgTFPath = pickString(cmd, "terragrunt-tf-path", tgTFPath, cfg().TerragruntTFPath)
+			gitlabSections = pickBool(cmd, "gitlab-sections", gitlabSections, cfg().GitlabSections)
 
 			resolved, err := resolveUnits(units, unitsFile, root, baseRef, headRef)
 			if err != nil {
@@ -95,8 +99,23 @@ in each unit.`,
 			}
 
 			for _, unit := range resolved {
-				fmt.Fprintf(cmd.ErrOrStderr(), "\n=== planning %s ===\n", unit)
-				res, err := runner.Plan(cmd.Context(), unit, opts)
+				unitOpts := opts
+				var buf *bytes.Buffer
+				if gitlabSections {
+					buf = &bytes.Buffer{}
+					unitOpts.Log = buf
+				} else {
+					fmt.Fprintf(cmd.ErrOrStderr(), "\n=== planning %s ===\n", unit)
+				}
+
+				res, err := runner.Plan(cmd.Context(), unit, unitOpts)
+
+				if gitlabSections {
+					id := sectionID("plan", unit)
+					section.Start(cmd.ErrOrStderr(), id, "Planning "+unit, err == nil)
+					cmd.ErrOrStderr().Write(buf.Bytes())
+					section.End(cmd.ErrOrStderr(), id)
+				}
 				if err != nil {
 					return err
 				}
@@ -153,6 +172,8 @@ in each unit.`,
 	cmd.Flags().StringVar(&environment, "environment", "", "environment these units belong to, recorded beside each plan for 'blastdoor eval' to fold into a deployment method")
 	cmd.Flags().StringVar(&baselineRef, "baseline-ref", "",
 		"git ref to plan each changed unit against as well, to detect changes already waiting to be applied there (default: off)")
+	cmd.Flags().BoolVar(&gitlabSections, "gitlab-sections", os.Getenv("GITLAB_CI") == "true",
+		"wrap each unit's output in a GitLab CI collapsible section, collapsed on success and expanded on failure (default: on under GitLab CI)")
 
 	return cmd
 }

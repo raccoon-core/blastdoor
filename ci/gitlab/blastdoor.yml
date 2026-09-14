@@ -116,6 +116,63 @@ variables:
   # in an emergency.
   BLASTDOOR_APPLY_ENABLED: "true"
 
+# Collapsible section helpers for job logs, adapted from
+# veepee/vptech/ci-cd/gitlab-workflow's .sections template and copied in
+# rather than included: this file ships standalone via a public GitHub raw
+# URL (see the header above), so it cannot depend on an internal GitLab
+# project. run_auto_section is the one addition — it buffers a step's
+# combined output, then opens the section collapsed if the step succeeded or
+# expanded if it didn't, before replaying what it printed. Each step reveals
+# its own outcome as soon as it finishes, rather than the whole job deciding
+# anything.
+.blastdoor:sections:
+  - |
+    start_section() {
+      local id=$1; local title=$2; local collapsed=${3:-""}
+      local opts=""
+      [ "$collapsed" = "collapsed" ] && opts="[collapsed=true]"
+      echo -e "\e[0Ksection_start:$(date +%s):${id}${opts}\r\e[0K\e[1;36m${title}\e[0m"
+    }
+  - |
+    end_section() {
+      local id=$1
+      echo -e "\e[0Ksection_end:$(date +%s):${id}\r\e[0K"
+    }
+  - |
+    run_section() {
+      local id=$1; local title=$2
+      start_section "$id" "$title" ""
+      shift 2
+      "$@"
+      end_section "$id"
+    }
+  - |
+    run_collapsed_section() {
+      local id=$1; local title=$2
+      start_section "$id" "$title" "collapsed"
+      shift 2
+      "$@"
+      end_section "$id"
+    }
+  - |
+    run_auto_section() {
+      local id=$1; local title=$2
+      shift 2
+      local tmp rc=0
+      tmp=$(mktemp)
+      "$@" >"$tmp" 2>&1 || rc=$?
+      local opts="" display_title="$title"
+      if [ $rc -eq 0 ]; then
+        opts="collapsed"
+        display_title="$title \e[1;32msucceeded\e[0m"
+      fi
+      start_section "$id" "$display_title" "$opts"
+      cat "$tmp"
+      rm -f "$tmp"
+      end_section "$id"
+      return $rc
+    }
+
 .blastdoor:rules:
   # Run on merge request pipelines, and on branch pipelines that no merge
   # request pipeline already covers — the second condition is what stops the
@@ -141,6 +198,8 @@ blastdoor:plan:
   rules:
     - !reference [".blastdoor:rules", default]
     - !reference [".blastdoor:rules", main]
+  before_script:
+    - !reference [".blastdoor:sections"]
   script:
     - mkdir -p "$BLASTDOOR_DIR"
     # On the default branch there is no merge base to diff against — it IS the
@@ -161,16 +220,30 @@ blastdoor:plan:
         # itself and its own pending changes would deny every commit.
         baseline_arg="--baseline-ref origin/${CI_MERGE_REQUEST_TARGET_BRANCH_NAME:-$CI_DEFAULT_BRANCH}"
       fi
-    - blastdoor detect --root "$BLASTDOOR_ROOT" $base_ref_arg | tee "$BLASTDOOR_DIR/units.txt"
+    # Wrapped by hand rather than run_auto_section/run_collapsed_section:
+    # both exec their command via "$@", which cannot run a pipeline in the
+    # calling shell — and this one needs to, both for the `| tee` and to see
+    # $base_ref_arg, a local variable the previous script step set that a
+    # subshell wouldn't inherit. Piped into tee, so its own exit status is
+    # always tee's anyway — nothing here for run_auto_section's expand-on-error
+    # to key off.
+    - |
+      start_section "detect" "Detecting changed units" "collapsed"
+      blastdoor detect --root "$BLASTDOOR_ROOT" $base_ref_arg | tee "$BLASTDOOR_DIR/units.txt"
+      end_section "detect"
     # Install the tool versions first, in the same job: a toolchain that will
-    # not install should not look like a plan that will not run.
+    # not install should not look like a plan that will not run. Not wrapped
+    # in run_auto_section: blastdoor itself wraps each unit's own output in a
+    # GitLab section (collapsed on success, expanded on failure), auto-detected
+    # from $GITLAB_CI — see --gitlab-sections in 'blastdoor prepare --help'.
     - blastdoor prepare --units-file "$BLASTDOOR_DIR/units.txt"
     # --environment records which environment this job planned, for 'eval' to
     # fold into a deployment method. $ENV is empty by default: this job plans
     # one unit list in one run. A project that plans int, stg and prd as
     # separate legs overrides this job with its own parallel:matrix supplying
     # ENV and a per-environment --units-file; left alone, --environment "" is
-    # inert — no environment.txt is written, and the feature stays off.
+    # inert — no environment.txt is written, and the feature stays off. Same
+    # per-unit GitLab sections as 'prepare' above, from blastdoor itself.
     - blastdoor plan --units-file "$BLASTDOOR_DIR/units.txt" --out-dir "$BLASTDOOR_DIR" --environment "$ENV" $base_ref_arg $baseline_arg
   artifacts:
     paths:
@@ -192,6 +265,8 @@ blastdoor:eval:
   rules:
     - !reference [".blastdoor:rules", default]
     - !reference [".blastdoor:rules", main]
+  before_script:
+    - !reference [".blastdoor:sections"]
   script:
     - |
       # On the default branch there is no merge base to diff against — it IS
@@ -216,9 +291,10 @@ blastdoor:eval:
       if [ -n "$BLASTDOOR_BASELINE_ENABLED" ] && [ "$CI_COMMIT_BRANCH" != "$CI_DEFAULT_BRANCH" ]; then
         baseline_arg="--require-clean-baseline"
       fi
-      # Still unset when eval runs: $ignores is unquoted there too, and this
-      # is the last command, so its exit status is the job's.
-      blastdoor eval \
+      # Still unset when eval runs: $ignores is unquoted there too. run_auto_section
+      # returns the wrapped command's own exit code, and it's the last command
+      # here, so that's still what decides the job's exit status.
+      run_auto_section "eval" "Evaluating policy" blastdoor eval \
         --plan-dir "$BLASTDOOR_DIR" \
         --policy "$BLASTDOOR_POLICY_DIR" \
         --out-dir "$BLASTDOOR_DIR" \

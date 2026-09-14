@@ -43,6 +43,12 @@ manager: auto
 # (--terragrunt-tf-path, one of: auto, tofu, terraform; default "auto")
 terragrunt_tf_path: auto
 
+# Wraps each unit's 'plan'/'prepare' output in a collapsible GitLab CI
+# section — collapsed on success, expanded on failure — instead of streaming
+# it straight to the job log. Set this to override that auto-detection.
+# (--gitlab-sections; default: on when $GITLAB_CI=true, off otherwise)
+gitlab_sections: true
+
 # ---------------------------------------------------------------------------
 # What judges it
 # ---------------------------------------------------------------------------

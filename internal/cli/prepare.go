@@ -1,22 +1,26 @@
 package cli
 
 import (
+	"bytes"
 	"fmt"
+	"os"
 
 	"github.com/raccoon-core/blastdoor/internal/runner"
+	"github.com/raccoon-core/blastdoor/internal/section"
 	"github.com/spf13/cobra"
 )
 
 func newPrepareCmd() *cobra.Command {
 	var (
-		units     []string
-		unitsFile string
-		root      string
-		baseRef   string
-		headRef   string
-		manager   string
-		tool      string
-		tgTFPath  string
+		units          []string
+		unitsFile      string
+		root           string
+		baseRef        string
+		headRef        string
+		manager        string
+		tool           string
+		tgTFPath       string
+		gitlabSections bool
 	)
 
 	cmd := &cobra.Command{
@@ -42,6 +46,7 @@ is installed, otherwise tenv.`,
 			tool = pickString(cmd, "tool", tool, cfg().Tool)
 			manager = pickString(cmd, "manager", manager, cfg().Manager)
 			tgTFPath = pickString(cmd, "terragrunt-tf-path", tgTFPath, cfg().TerragruntTFPath)
+			gitlabSections = pickBool(cmd, "gitlab-sections", gitlabSections, cfg().GitlabSections)
 
 			resolved, err := resolveUnits(units, unitsFile, root, baseRef, headRef)
 			if err != nil {
@@ -64,9 +69,25 @@ is installed, otherwise tenv.`,
 				if chosen == "" || chosen == runner.ManagerAuto {
 					chosen = runner.DetectManager(unit)
 				}
-				fmt.Fprintf(cmd.ErrOrStderr(), "\n=== preparing %s (%s) ===\n", unit, chosen)
 
-				if err := runner.Prepare(cmd.Context(), unit, opts); err != nil {
+				unitOpts := opts
+				var buf *bytes.Buffer
+				if gitlabSections {
+					buf = &bytes.Buffer{}
+					unitOpts.Log = buf
+				} else {
+					fmt.Fprintf(cmd.ErrOrStderr(), "\n=== preparing %s (%s) ===\n", unit, chosen)
+				}
+
+				err := runner.Prepare(cmd.Context(), unit, unitOpts)
+
+				if gitlabSections {
+					id := sectionID("prepare", unit)
+					section.Start(cmd.ErrOrStderr(), id, fmt.Sprintf("Preparing %s (%s)", unit, chosen), err == nil)
+					cmd.ErrOrStderr().Write(buf.Bytes())
+					section.End(cmd.ErrOrStderr(), id)
+				}
+				if err != nil {
 					return err
 				}
 				fmt.Fprintln(cmd.OutOrStdout(), unit)
@@ -83,6 +104,8 @@ is installed, otherwise tenv.`,
 	cmd.Flags().StringVar(&manager, "manager", "auto", "auto, tenv, mise or none")
 	cmd.Flags().StringVar(&tool, "tool", "auto", "auto, tofu, terraform or terragrunt")
 	cmd.Flags().StringVar(&tgTFPath, "terragrunt-tf-path", "auto", "binary Terragrunt wraps: auto, tofu or terraform")
+	cmd.Flags().BoolVar(&gitlabSections, "gitlab-sections", os.Getenv("GITLAB_CI") == "true",
+		"wrap each unit's output in a GitLab CI collapsible section, collapsed on success and expanded on failure (default: on under GitLab CI)")
 
 	return cmd
 }
