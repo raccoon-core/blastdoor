@@ -1,0 +1,11 @@
+# Add Blastdoor: Policy-Based Plan Checker for Terraform/OpenTofu Workflows
+
+This pull request introduces Blastdoor, a policy-based plan checker for Terraform/OpenTofu workflows. It ensures adherence to custom Open Policy Agent (OPA) rules, and determines if infrastructure changes are permitted, need review, or are denied.
+
+Key features include:
+- Policy-based decisions
+- Flexibility for Terraform/OpenTofu plans
+- Quick setup via Docker or Go
+- Extensive documentation for users and contributors
+
+Full usage guides and examples can be accessed in the official documentation.
